@@ -11,10 +11,8 @@ from langchain_core.documents import Document
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain.prompts import ChatPromptTemplate
-from langchain_core.runnables.history import RunnableWithMessageHistory
-from langchain_community.chat_message_histories import ChatMessageHistory
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.redis import RedisSaver
 from langgraph.types import Command
 from typing_extensions import Annotated
 from pydantic import Field
@@ -36,9 +34,6 @@ from app.core.config import settings
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# --- 1. 대화 기록(History) 관리 ---
-
 
 # --- 3. 핵심 서비스 클래스 ---
 
@@ -72,7 +67,16 @@ class ChatbotService:
         workflow.set_entry_point("classify_intent") 
         workflow.add_edge("classify_intent", "route_confirmation")
 
-        checkpointer = MemorySaver()
+        REDIS_URL = os.getenv("REDIS_URL")
+
+        ttl_config = {
+            "default_ttl": 60,  # Expire checkpoints after 60 minutes
+            "refresh_on_read": True,  # Reset expiration time when reading checkpoints
+        }
+
+        with RedisSaver.from_conn_string(REDIS_URL, ttl=ttl_config) as checkpointer:
+            checkpointer.setup()
+
         self.graph = workflow.compile(checkpointer=checkpointer)
 
     # --- LangGraph 노드 함수 (클래스 메서드로 변환) ---
