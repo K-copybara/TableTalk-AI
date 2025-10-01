@@ -138,19 +138,20 @@ class VectorStoreService:
             filter={"$and": [{"store_id": store_id}, {"type": type}]}
         )
     
-    def search_menus(self, store_id: int, query: str, filter_dict:Optional[Dict[str, Any]], k: int = 10) -> List[Document]:
-        """동적 메타데이터 필터를 사용하여 메뉴를 검색합니다."""
-        base_filter = {"$and": [{"store_id": store_id}, {"type": "menu"}]}
+    def find_conditional_document(self, store_id: int, query: str, type: str, k=1, filters: Optional[List[Dict[str, Any]]] = None,) -> List[Document]:
+        """사용자의 조건에 따른 메뉴 문서를 검색합니다."""
         
-        if filter_dict:
-            if "$and" in filter_dict:
-                final_filter = {"$and": base_filter["$and"] + filter_dict["$and"]}
-            else:
-                final_filter = {"$and": base_filter["$and"] + [filter_dict]}
-        else:
-            final_filter = base_filter
+        if filters is not None and not isinstance(filters, list):
+            raise TypeError("filters must be a List[Dict[str, Any]] or None")
+        
+        base_filter: List[Dict[str, Any]] = [{"store_id": store_id}, {"type": type}]
+        if(filters):
+            base_filter.extend(filters)
+        
+        final_filter = {"$and": base_filter}
+        print(final_filter)
 
-        return self.vectorstore.similarity_search(
+        return self.vectorstore.similarity_search_with_relevance_scores(
             query=query,
             k=k,
             filter=final_filter
