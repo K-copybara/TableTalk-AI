@@ -49,12 +49,15 @@ class ChatbotService:
         # --- LangGraph 워크플로우 빌드 ---
         workflow = StateGraph(ChatState)
 
-        workflow.add_node("classify_intent", self.classify_intent)
-        workflow.add_node("route_confirmation", self.route_confirmation)
-        workflow.add_node("ask_add_to_cart_confirmation", self.ask_add_to_cart_confirmation)
-        workflow.add_node("call_add_to_cart_api", self.call_add_to_cart_api)
+        workflow.add_node("classify_intent", self.classify_intent) # 의도 분류
+        workflow.add_node("route_confirmation", self.route_confirmation) # 노드 라우팅
+        workflow.add_node("ask_add_to_cart_confirmation", self.ask_add_to_cart_confirmation) # 장바구니 추가 확인
+        workflow.add_node("call_add_to_cart_api", self.call_add_to_cart_api) # 장바구니 추가
+        workflow.add_node("ask_request_confirmation", self.ask_request_confirmation) # 요청사항 확인
+        workflow.add_node("call_request_api", self.call_request_api) # 요청사항 전송
+        workflow.add_node
 
-        workflow.set_entry_point("classify_intent")
+        workflow.set_entry_point("classify_intent") 
         workflow.add_edge("classify_intent", "route_confirmation")
 
         checkpointer = MemorySaver()
@@ -212,9 +215,30 @@ class ChatbotService:
                     "response": "네/아니오로 알려주세요. 장바구니에 추가할까요?",
                 }
             )
+        if awaiting == "confirmation_request":
+            if intent == Intent.CONFIRM:
+                return Command(goto="call_request_api")
+            elif intent == Intent.DENY:
+                return Command(
+                    goto=END,
+                    update={
+                        "response": "네, 추가적으로 필요하신 사항이 있다면 말씀해주세요.",
+                        "task_params": None, # 작업 완료 후 파라미터 초기화
+                        "awaiting": None
+                    }
+                )
+            return Command(
+                goto=END,
+                update={
+                    "response": "네/아니오로 알려주세요. 요청사항을 전송할까요?",
+                }
+            )
         
         if intent == Intent.ADD_TO_CART:
             return Command(goto="ask_add_to_cart_confirmation")
+        
+        if intent == Intent.SEND_REQUEST:
+            return Command(goto="ask_request_confirmation")
         
         return Command(
             goto=END,
@@ -296,6 +320,81 @@ class ChatbotService:
                     "task_params": None,
                     "awaiting": None,
                     "messages": [AIMessage(content="죄송합니다, 서버 통신 중 오류가 발생하여 장바구니에 추가하지 못했습니다.")]
+                }
+            )
+        
+    def ask_request_confirmation(self, state: ChatState) -> Dict[str, Any]:
+        """
+        장바구니 추가 전, 사용자에게 확인 질문을 생성하고
+        'awaiting' 상태를 업데이트합니다.
+        """
+        print(">> Node: ask_request_confirmation")
+
+        task_params = state.get("task_params")
+        print(task_params)
+        if not isinstance(task_params, SendRequestParams):
+            # 잘못된 파라미터가 들어왔다면, 에러 응답을 생성하고 종료
+            error_message = "죄송합니다, 요청사항을 확인하는 중 오류가 발생했습니다. 다시 시도해 주세요."
+            return {"response": error_message}
+        
+        request_note = task_params.request_note
+        response_message = f"가게에 '{request_note}' 라고 요청사항을 전송할까요?"
+        awaiting_status = "confirmation_request"
+
+        print(f"Asking confirmation: {response_message}")
+        print(f"State awaiting set to: {awaiting_status}")
+
+        return Command(
+            goto=END,
+            update={"response": response_message, "messages": [AIMessage(content=response_message)], "awaiting": awaiting_status}
+        )
+
+    def call_request_api(self, state: ChatState) -> Dict[str, Any]:
+        """
+        사용자의 확인 후, 실제 백엔드 API를 호출하여 요청사항을 전송합니다.
+        """
+        print(">> Node: call_request_api")
+
+        task_params = state.get("task_params")
+        if not isinstance(task_params, SendRequestParams):
+            return {"response": "오류가 발생했습니다."}
+
+        request_note = task_params.request_note
+
+        try:
+            # --- 실제 API 호출 부분 ---
+            payload = {"menu_name": request_note }
+            # response = requests.post(BACKEND_API_URL, json=payload)
+            # response.raise_for_status()  # 200번대 응답이 아니면 에러 발생
+            
+            # api_result = response.json()
+            # print(f"API call successful: {api_result}")
+            
+            # 작업이 성공적으로 끝났으므로, 관련 상태를 초기화하고 결과를 저장
+            response_message = f"요청사항을 전송하였습니다! 잠시만 기다려주세요."
+            return Command(
+                goto=END,
+                update={
+                    "api_result": "success", # 수정 필요
+                    "response": response_message,
+                    "task_params": None, # 작업 완료 후 파라미터 초기화
+                    "awaiting": None,    # 대기 상태 해제
+                    "messages": [AIMessage(content=response_message)]
+                }
+            )
+        
+        # except requests.exceptions.RequestException as e:
+        except Exception as e:
+            print(f"API call failed: {e}")
+            # API 호출 실패 시 사용자에게 보여줄 메시지
+            return Command(
+                goto=END,
+                update={
+                    "api_result": {"error": str(e)},
+                    "response": "죄송합니다, 서버 통신 중 오류가 발생하여 요청사항을 전송하지 못했습니다.",
+                    "task_params": None,
+                    "awaiting": None,
+                    "messages": [AIMessage(content="죄송합니다, 서버 통신 중 오류가 발생하여 요청사항을 전송하지 못했습니다.")]
                 }
             )
         
