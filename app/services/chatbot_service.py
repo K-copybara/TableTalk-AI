@@ -92,7 +92,7 @@ class ChatbotService:
             ("system",
                 """
                 당신은 음식점 챗봇의 의도 분류기입니다.
-                사용자의 최근 메시지와 이전 대화 내용을 바탕으로, 사용자의 의도를 아래 6종 중 하나로 분류하고 가장 적절한 도구(Tool)로 필요한 정보를 추출하세요.
+                사용자의 최근 메시지와 이전 대화 내용을 바탕으로, 사용자의 의도를 아래 8종 중 하나로 분류하고 가장 적절한 도구(Tool)로 필요한 정보를 추출하세요.
                 도구는 'type' 필드로 구분됩니다.
                 type은 route|add_to_cart|send_request|get_menu_info 중 하나입니다.
                 추가 파라미터가 필요 없는 경우는 route를 사용하여 intent만 반환하세요.
@@ -100,7 +100,7 @@ class ChatbotService:
                 - send_request: 가게에 대한 요청사항 전달
                 - recommend_menu: 사용자의 조건에 따른 메뉴 검색 및 정보 제공. 추천 요청은 전부 이 의도에 해당하며 문장에 명시적으로 나와있지 않더라도 조건이 있는 경우 이 의도에 포함 (예시 : ~는 뭐가 있어? ~한 메뉴 있어?)
                 - get_store_info: 가게에 대한 정보 제공 (가게 이름, 설명, 영업시간, 브레이크 타임 등)
-                - get_menu_info: 특정 메뉴에 대한 설명 제공 (특정 메뉴의 가격/맵기/알레르기 유발 재료 등)
+                - get_menu_info: 특정 한 개 메뉴에 대한 설명 제공 (특정 메뉴의 가격/맵기/알레르기 유발 재료 등)
                 - chitchat: 기능과 무관한 일반 대화
                 - confirm: 사용자의 긍정 응답 (예: "네", "맞아요", "어", "응")
                 - deny: 사용자의 부정 응답 (예: "아니요", "취소")
@@ -111,7 +111,7 @@ class ChatbotService:
         ])
 
         messages = state['messages']
-        history = "\n".join([f"{'User' if msg.type == 'human' else 'Bot'}: {msg.content}" for msg in messages[:-1]])
+        history = "\n".join([f"{'User' if msg.type == 'human' else 'Bot'}: {msg.content}" for msg in messages[-9:-1]])
         userInput = messages[-1].content
 
         result = (prompt | model).invoke({"history": history, "userInput": userInput})
@@ -211,7 +211,11 @@ class ChatbotService:
         if intent == Intent.RECOMMEND_MENU:
             return Command(goto="extract_menu_params")
         
-        return Command(goto="chitchat")
+        response = "죄송합니다. 질문 주신 내용을 파악하지 못했습니다. 다시 한번 말씀해주시겠어요?"
+        return Command(
+            goto=END,
+            update={"response": response, "messages": [AIMessage(content=response)]}
+        )
 
 
     def ask_add_to_cart_confirmation(self, state: ChatState) -> Dict[str, Any]:
@@ -409,6 +413,7 @@ class ChatbotService:
 
         store_id = state["store_id"]
         question = state['messages'][-1].content
+        history = "\n".join([f"{'User' if msg.type == 'human' else 'Bot'}: {msg.content}" for msg in state['messages'][-9:-1]])
         print(question)
 
         docs = self.vectorstore_service.find_document(
@@ -422,11 +427,14 @@ class ChatbotService:
             llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
 
             prompt = ChatPromptTemplate.from_messages([("system",
-                """당신은 레스토랑 챗봇입니다. 오직 아래에 제공된 '[가게 정보]'만을 사용하여 사용자의 '[질문]'에 대해 간결하고 친절하게 답변하세요.
+                """당신은 레스토랑 챗봇입니다. 아래에 제공된 [가게 정보]와 [대화 기록]만을 사용하여 사용자의 '[질문]'에 대해 간결하고 친절하게 답변하세요.
                 정보가 없다면, 정보를 찾을 수 없다고 솔직하게 답변해야 합니다. 절대 정보를 지어내지 마세요.
                 
                 [가게 정보]
                 {context}
+
+                [대화 기록]
+                {history}
                 """),
                 ("human", "[질문]\n{question}")])
             
@@ -434,7 +442,8 @@ class ChatbotService:
 
             response = chain.invoke({
                 "context": content,
-                "question": question
+                "question": question,
+                "history":history
             })
 
             return Command(
@@ -458,6 +467,8 @@ class ChatbotService:
 
         store_id = state["store_id"]
         question = state['messages'][-1].content
+        history = "\n".join([f"{'User' if msg.type == 'human' else 'Bot'}: {msg.content}" for msg in state['messages'][-9:-1]])
+
         task_params = state.get("task_params")
 
         docs = self.vectorstore_service.find_document(
@@ -472,12 +483,15 @@ class ChatbotService:
             llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
 
             prompt = ChatPromptTemplate.from_messages([("system",
-                """당신은 레스토랑 챗봇입니다. 오직 아래에 제공된 '[메뉴 정보]'만을 사용하여 사용자의 '[질문]'에 대해 간결하고 친절하게 답변하세요.
+                """당신은 레스토랑 챗봇입니다. 오직 아래에 제공된 [메뉴 정보]와 [대화 기록]을 사용하여 사용자의 '[질문]'에 대해 간결하고 친절하게 답변하세요.
                 알레르기 유발 재료 정보는 알레르기에 대한 질문인 경우에만 포함하세요.
                 정보가 없다면, 정보를 찾을 수 없다고 솔직하게 답변해야 합니다. 절대 정보를 지어내지 마세요.
                 
                 [가게 정보]
                 {context}
+
+                [대화 기록]
+                {history}
                 """),
                 ("human", "[질문]\n{question}")])
             
@@ -485,7 +499,8 @@ class ChatbotService:
 
             response = chain.invoke({
                 "context": content,
-                "question": question
+                "question": question,
+                "history":history
             })
 
             return Command(
