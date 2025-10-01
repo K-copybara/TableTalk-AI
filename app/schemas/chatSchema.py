@@ -38,11 +38,15 @@ class RouteQuery(BaseModel):
     type: Literal["route"]
     intent: Intent = Field(description="분류된 사용자의 최종 의도")
 
+class MenuItem(BaseModel):
+    """장바구니에 담길 개별 메뉴 항목."""
+    menu_name: str = Field(description="메뉴 이름")
+    quantity: int = Field(default=1, description="수량")
+
 class AddToCartParams(BaseModel):
     """'장바구니 추가' 태스크에 필요한 파라미터."""
     type: Literal["add_to_cart"]
-    menu_name: str = Field(description="장바구니에 추가할 메뉴의 이름")
-    quantity: int = Field(default=1, description="추가할 메뉴의 수량")
+    items: List[MenuItem] = Field(description="장바구니에 추가할 메뉴 항목들의 리스트")
 
 class SendRequestParams(BaseModel):
     """'요청사항 전달' 태스크에 필요한 파라미터."""
@@ -75,11 +79,11 @@ class MenuQuerySchema(BaseModel):
     is_popular: Optional[bool] = Field(default=None, description="인기 메뉴를 원하는지 여부")
     
     # 추천 유형을 결정하는 핵심 필드들
-    single_result_needed: bool = Field(
-        default=False, description="결과가 메뉴 하나로 이루어져도 되는 경우 True"
+    single_result: bool = Field(
+        default=True, description="결과가 메뉴 하나로 이루어져도 되는 경우 True"
     )
-    num_people: Optional[int] = Field(
-        default=1, description="추천이 필요한 인원수"
+    num_food: Optional[int] = Field(
+        default=None, description="추천이 필요한 음식의 개수"
     )
 
 

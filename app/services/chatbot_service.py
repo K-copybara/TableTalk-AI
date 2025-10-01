@@ -1,6 +1,7 @@
 import os
 import ast
 import logging
+import requests
 from typing import Optional, List, Dict, Any, Union
 
 # LangChain 및 LangGraph 관련 라이브러리
@@ -25,6 +26,8 @@ from app.schemas.chatSchema import (
     AddToCartParams,
     SendRequestParams,
     GetMenuInfoParams,
+    MenuQuerySchema,
+    MenuItem
 )
 
 # 외부 서비스 및 설정
@@ -58,43 +61,19 @@ class ChatbotService:
         workflow.add_node("call_request_api", self.call_request_api) # 요청사항 전송
         workflow.add_node("get_store_info", self.get_store_info) # 가게 정보 제공
         workflow.add_node("get_menu_info", self.get_menu_info) # 메뉴 정보 제공
-        workflow.add_node("chitchat", self.chitchat)
+        workflow.add_node("chitchat", self.chitchat) # 기본 대화
+
+        workflow.add_node("extract_menu_params", self.extract_menu_params) # 추천 조건 추출
+        workflow.add_node("execute_search", self.execute_search) # 문서 검색
+        workflow.add_node("rerank_documents", self.rerank_documents) # 유사도 + 인기도 기반 스코어링
+        workflow.add_node("generate_single_recommendation", self.generate_single_recommendation) # 한 가지 메뉴 응답 생성
+        workflow.add_node("generate_multiple_recommendation", self.generate_multiple_recommendation) # 여러 가지 메뉴 응답 생성
 
         workflow.set_entry_point("classify_intent") 
         workflow.add_edge("classify_intent", "route_confirmation")
 
         checkpointer = MemorySaver()
         self.graph = workflow.compile(checkpointer=checkpointer)
-
-    # --- 도구(Tool) 정의 ---
-    def _map_allergens_to_ingredients(self, store_id: int, user_allergy_request: str) -> List[str]:
-        """사용자가 언급한 자연어 알레르기 요청을 실제 재료 목록으로 매핑"""
-        available_allergens = self.vectorstore_service.get_all_allergens(store_id)
-        prompt = (
-            f"사용자 알레르기 요청: \"{user_allergy_request}\"\n"
-            f"가게 알레르겐 라벨 목록: {available_allergens}\n\n"
-            "위 목록에 존재하는 라벨만 사용하여 관련 알레르겐을 파이썬 리스트로 반환하세요.\n"
-            "오직 리스트만 출력하세요. 예: ['대두','땅콩']"
-        )
-        #추후 JSON + json.loads로 안정화 필요
-
-        print(f"🧠 [LLM 호출] 알레르겐 변환: '{user_allergy_request}' -> ? (대상: {available_allergens})")
-        response = self.llm.invoke(prompt)
-        llm_output = response.content.strip() # type: ignore
-        print(f"🧠 [LLM 응답] 알레르겐 변환: '{user_allergy_request}' -> {llm_output}")
-
-        try:
-            ingredients = ast.literal_eval(llm_output)
-
-            if isinstance(ingredients, list):
-                return ingredients
-            else:
-                print(f"⚠️ [파싱 경고] LLM 응답이 리스트 형태가 아닙니다: {llm_output}")
-                return []
-        except (SyntaxError, ValueError) as e:
-            # LLM 응답이 파싱 불가능한 형태일 경우 (예: "['땅콩', '잣'")
-            logger.info(f"🚨 [파싱 오류] LLM 응답을 파싱할 수 없습니다: {llm_output}, 오류: {e}")
-            return []
 
     # --- LangGraph 노드 함수 (클래스 메서드로 변환) ---
     def classify_intent(self, state: ChatState) -> Dict[str, Any]:
@@ -115,11 +94,11 @@ class ChatbotService:
                 추가 파라미터가 필요 없는 경우는 route를 사용하여 intent만 반환하세요.
                 - add_to_cart: 장바구니에 메뉴 추가
                 - send_request: 가게에 대한 요청사항 전달
+                - recommend_menu: 사용자의 조건에 따른 메뉴 검색 및 정보 제공. 추천 요청은 전부 이 의도에 해당하며 문장에 명시적으로 나와있지 않더라도 조건이 있는 경우 이 의도에 포함 (예시 : ~는 뭐가 있어? ~한 메뉴 있어?)
                 - get_store_info: 가게에 대한 정보 제공 (가게 이름, 설명, 영업시간, 브레이크 타임 등)
-                - get_menu_info: 이름이 명시된 메뉴에 대한 정보 제공 (특정 메뉴의 가격/맵기/알레르기 유발 재료 등)
-                - recommend_menu: 사용자의 요청에 따른 메뉴 검색 및 정보 제공
+                - get_menu_info: 특정 메뉴에 대한 설명 제공 (특정 메뉴의 가격/맵기/알레르기 유발 재료 등)
                 - chitchat: 기능과 무관한 일반 대화
-                - confirm: 사용자의 긍정 응답 (예: "네", "맞아요")
+                - confirm: 사용자의 긍정 응답 (예: "네", "맞아요", "어", "응")
                 - deny: 사용자의 부정 응답 (예: "아니요", "취소")
                 필요한 모든 파라미터는 반드시 JSON으로 응답해야 합니다.
                 """
@@ -175,6 +154,7 @@ class ChatbotService:
                     goto=END,
                     update={
                         "response": "네, 추가적으로 필요하신 사항이 있다면 말씀해주세요.",
+                        "messages": [AIMessage(content="네, 추가적으로 필요하신 사항이 있다면 말씀해주세요.")],
                         "task_params": None, # 작업 완료 후 파라미터 초기화
                         "awaiting": None
                     }
@@ -182,7 +162,8 @@ class ChatbotService:
             return Command(
                 goto=END,
                 update={
-                    "response": "네/아니오로 알려주세요. 장바구니에 추가할까요?",
+                    "response": "네/아니오로 알려주세요. 요청사항을 전송할까요?",
+                    "messages": [AIMessage(content="네/아니오로 알려주세요. 요청사항을 전송할까요?")]
                 }
             )
         if awaiting == "confirmation_request":
@@ -193,15 +174,19 @@ class ChatbotService:
                     goto=END,
                     update={
                         "response": "네, 추가적으로 필요하신 사항이 있다면 말씀해주세요.",
+                        "messages": [AIMessage(content="네, 추가적으로 필요하신 사항이 있다면 말씀해주세요.")],
                         "task_params": None, # 작업 완료 후 파라미터 초기화
                         "awaiting": None
                     }
                 )
+            
             return Command(
                 goto=END,
                 update={
                     "response": "네/아니오로 알려주세요. 요청사항을 전송할까요?",
+                    "messages": [AIMessage(content="네/아니오로 알려주세요. 요청사항을 전송할까요?")]
                 }
+                
             )
         
         if intent == Intent.ADD_TO_CART:
@@ -219,10 +204,10 @@ class ChatbotService:
         if intent == Intent.CHITCHAT:
             return Command(goto="chitchat")
         
-        return Command(
-            goto=END,
-            update={"response": "지금은 장바구니 기능만 테스트 중이에요. 담을 메뉴를 말씀해 주세요!"}
-        )
+        if intent == Intent.RECOMMEND_MENU:
+            return Command(goto="extract_menu_params")
+        
+        return Command(goto="chitchat")
 
 
     def ask_add_to_cart_confirmation(self, state: ChatState) -> Dict[str, Any]:
@@ -233,23 +218,56 @@ class ChatbotService:
         print(">> Node: ask_add_to_cart_confirmation")
 
         task_params = state.get("task_params")
+        store_id = state["store_id"]
+
         print(task_params)
         if not isinstance(task_params, AddToCartParams):
             # 잘못된 파라미터가 들어왔다면, 에러 응답을 생성하고 종료
             error_message = "죄송합니다, 메뉴를 장바구니에 담는 중 오류가 발생했습니다. 다시 시도해 주세요."
             return {"response": error_message}
         
-        menu_name = task_params.menu_name
-        quantity = task_params.quantity or 1
-        response_message = f"'{menu_name}' {quantity}개를 장바구니에 추가할까요?"
+        validated_items: List[MenuItem] = []
+        for item in task_params.items:
+            # DB에서 가장 유사한 메뉴 1개를 검색
+            search_results: List[Document] = self.vectorstore_service.find_document(
+                store_id=store_id,
+                query=item.menu_name,
+                type="menu",
+                k=1
+            )
+        
+            # 검색 결과가 있을 경우에만, 검증된 아이템으로 간주하고 추가
+            if search_results:
+                found_doc = search_results[0]
+                correct_menu_name = found_doc.metadata.get("menu_name", item.menu_name)
+                validated_items.append(
+                    MenuItem(menu_name=correct_menu_name, quantity=item.quantity)
+                )
+        if not validated_items:
+            msg = "담을 수 있는 메뉴를 찾지 못했어요. 다른 메뉴로 다시 말씀해 주세요."
+            return Command(goto=END, update={"response": msg, "messages": [AIMessage(content=msg)]})        
+
+        item_strings = [f"'{item.menu_name}' {item.quantity}개" for item in validated_items]
+        items_text = ", ".join(item_strings)
+        response_message = f"{items_text}를 장바구니에 추가할까요?"
+        
+        if len(item_strings) == 1:
+            response_message = f"{item_strings[0]}를 장바구니에 추가할까요?"
+        else:
+            items_text = ", ".join(item_strings)
+            response_message = f"{items_text}를 장바구니에 추가할까요?"
+
+
         awaiting_status = "confirmation_add_to_cart"
 
         print(f"Asking confirmation: {response_message}")
         print(f"State awaiting set to: {awaiting_status}")
 
+        updated_task_params = AddToCartParams(items=validated_items, type="add_to_cart")
+
         return Command(
             goto=END,
-            update={"response": response_message, "messages": [AIMessage(content=response_message)], "awaiting": awaiting_status}
+            update={"response": response_message, "messages": [AIMessage(content=response_message)], "awaiting": awaiting_status, "task_params":updated_task_params}
         )
 
     def call_add_to_cart_api(self, state: ChatState) -> Dict[str, Any]:
@@ -262,12 +280,10 @@ class ChatbotService:
         if not isinstance(task_params, AddToCartParams):
             return {"response": "죄송합니다. 오류가 발생했습니다."}
 
-        menu_name = task_params.menu_name
-        quantity = task_params.quantity or 1
-
         try:
             # --- 실제 API 호출 부분 ---
-            payload = {"menu_name": menu_name, "quantity": quantity}
+            items_payload = [item.model_dump() for item in task_params.items]
+            payload = {"items": items_payload}
             # response = requests.post(BACKEND_API_URL, json=payload)
             # response.raise_for_status()  # 200번대 응답이 아니면 에러 발생
             
@@ -275,7 +291,10 @@ class ChatbotService:
             # print(f"API call successful: {api_result}")
             
             # 작업이 성공적으로 끝났으므로, 관련 상태를 초기화하고 결과를 저장
-            response_message = f"'{menu_name}' {quantity}개가 장바구니에 성공적으로 추가되었습니다."
+            item_strings = [f"'{item.menu_name}' {item.quantity}개" for item in task_params.items]
+            items_text = ", ".join(item_strings)
+            response_message = f"{items_text}가 장바구니에 성공적으로 추가되었습니다."
+            
             return Command(
                 goto=END,
                 update={
@@ -501,11 +520,283 @@ class ChatbotService:
 
         return Command(
             goto=END,
-            update={"response": response, "messages": [AIMessage(content=response)]}
+            update={"response": response, "messages": [AIMessage(content=response)], "task_params": None}
         )
     
-    # --- Public 메서드 ---
+    def extract_menu_params(self, state:ChatState) -> Dict[str, Any] :
+        """
+        사용자 질문을 분석하여 메뉴 추천에 필요한 모든 조건들을
+        'MenuQuerySchema' 객체로 추출합니다.
+        """
+        print(">> Node: extract_menu_params")
 
+        llm = ChatOpenAI(model="gpt-4-turbo", temperature=0)
+        structured_llm = llm.with_structured_output(MenuQuerySchema, method="function_calling")
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", 
+            """당신은 레스토랑 챗봇의 메뉴 추천 조건 분석 전문가입니다.
+            사용자의 최근 메시지와 이전 대화 내용을 바탕으로, 'MenuQuerySchema'의 모든 필드를 최대한 정확하게 채워주세요.
+
+            필드별 가이드라인:
+            - query_description: '따뜻한 국물 요리', '매콤한 메뉴'처럼 맛이나 형태를 묘사하는 부분을 추출하세요. 없으면 null로 두세요.
+            - price_max / price_min: '만원 이하', '2만원에서 3만원 사이' 같은 가격 정보를 숫자로 변환하여 추출하세요.
+            - allergies_include: '땅콩 있는', '갑각류 들어간' 같은 특정 재료 포함 요구사항을 추출하세요.
+            - allergies_exclude: '땅콩 빼고', '갑각류 없는' 같은 특정 재료 제외 요구사항을 추출하세요.
+            - menu_exclude: 추천에서 제외할 메뉴 이름을 이전 대화의 맥락을 반영하여 추출하세요. 없으면 기본값인 None으로 두세요.
+            - is_popular: '인기 있는', '잘나가는', '대표 메뉴' 같은 단어가 있으면 True로 설정하세요.
+            - single_result: 사용자의 질문에 단일 메뉴로 대답할 수 있다면 True로 설정하세요. '어떤 메뉴들이 있어?', '메뉴 종류' 등 복수로 응답해야 하는 경우 False로 두세요.
+            - num_food: '3명이서 먹을', '두 개' 같은 음식 개수를 숫자로 추출하세요. 1명은 1개의 음식을 먹습니다. 없으면 기본값인 None으로 두세요.
+            """),
+            ("human", "이전 대화:\n{history}\n\n최신 사용자 메시지: {userInput}")
+        ])
+
+        messages = state['messages']
+        history = "\n".join([f"{'User' if msg.type == 'human' else 'Bot'}: {msg.content}" for msg in messages[:-1]])
+        userInput = messages[-1].content
+
+        chain = prompt | structured_llm
+        extracted_params = chain.invoke({"history": history, "userInput": userInput})
+
+        print(f"Extracted menu query params: {extracted_params}")
+
+        return Command(
+            goto="execute_search",
+            update={"menu_query_params": extracted_params}
+        )
+    
+    def execute_search(self, state:ChatState) -> Dict[str, Any] :
+        """
+        추출된 menu_query_params를 사용하여 ChromaDB에서
+        의미 기반 검색과 메타데이터 필터링을 결합한 검색을 수행하여 문서 후보군을 만듭니다.
+        """
+        print(">> Node: execute_search")
+
+        store_id = state["store_id"]
+        params = state.get("menu_query_params")
+        if not params:
+            print("Error: menu_query_params not found in state.")
+            return Command(
+                goto=END,
+                update={"response": "죄송합니다. 오류가 발생했습니다."}
+            )
+
+        filters = []
+        if params.price_min is not None:
+            filters.append({"price": {"$gte": params.price_min}})
+        if params.price_max is not None:
+            filters.append({"price": {"$lte": params.price_max}})
+        if params.allergies_exclude:
+            filters.append({"allergens": {"$nin": params.allergies_exclude}})
+        if params.allergies_include:
+            filters.append({"allergens": {"$in": params.allergies_include}})
+        if params.menu_exclude:
+            filters.append({"menu_name": {"$nin": params.menu_exclude}})
+
+        query_text = params.query_description
+        if not query_text:
+            query_text = state['messages'][-1].content
+        
+        print(f"Query text for vector search: '{query_text}'")
+        
+        try:
+            results = self.vectorstore_service.find_conditional_document(
+                store_id=store_id,
+                type="menu",
+                query=query_text,
+                filters=filters,
+                k=10
+            )
+
+        except Exception as e:
+            print(f"Error during ChromaDB query: {e}")
+            return Command(
+                goto=END,
+                update={"response": "죄송합니다. 오류가 발생했습니다."}
+            )
+          
+        print(f"Found {len(results)} candidate documents.")
+
+        return Command(
+            goto="rerank_documents",
+            update={"search_results": results}
+        )
+    
+    def rerank_documents(self, state:ChatState) -> Dict[str, Any] :
+        """
+        검색된 후보군에 인기도를 결합하여 최종 점수를 계산하고,
+        사용자 요구에 맞게 결과 개수를 조절합니다.
+        """
+        print(">> Node: rerank_documents")
+
+        SIMILARITY_WEIGHT = 0.8  # 검색어와의 관련도 가중치
+        POPULARITY_WEIGHT = 0.2  # 대중적인 인기도 가중치
+
+        candidate_results = state.get("search_results")
+        params = state.get("menu_query_params")
+        if not candidate_results:
+            return Command(
+                goto=END,
+                update={"response": "죄송합니다. 다른 조건으로 다시 질문해주시겠어요?"}
+            )
+
+        menu_ids = [doc.metadata.get('menu_id') for doc, score in candidate_results if doc.metadata.get('menu_id')]
+        # try:
+        #     response = requests.post(BACKEND_API_URL, json={"menu_ids": menu_ids})
+        #     response.raise_for_status()
+        #     popularity_data = response.json().get("data",[])
+        #     popularity_map = {item['menu_id']: item['score'] for item in popularity_data}
+        # except requests.exceptions.RequestException as e:
+        #     print(f"API call for popularity failed: {e}. Proceeding without popularity scores.")
+        
+        popularity_map = { # 임시 데이터
+            1:20,
+            2:30,
+            3:50,
+            4:10,
+            5:70,
+            6:40,
+            7:90,
+            8:110,
+            9:120,
+            10:20,
+            11:30,
+            12:40,
+            13:70,
+            14:3,
+        }
+
+        scored_results = []
+
+        # 인기도 점수 정규화를 위한 최대/최소값 찾기
+        pop_scores = [score for score in popularity_map.values() if score is not None]
+        min_pop, max_pop = (min(pop_scores), max(pop_scores)) if pop_scores else (0, 0)
+        
+        for doc, similarity_score in candidate_results:
+            menu_id = doc.metadata.get('menu_id')
+            pop_score = popularity_map.get(menu_id, 0)
+
+            # 인기도 점수 정규화 (0~1 사이 값으로 변환)
+            if max_pop > min_pop:
+                norm_pop_score = (pop_score - min_pop) / (max_pop - min_pop)
+            else:
+                norm_pop_score = 0.0
+
+            # 최종 점수 = (유사도 * 가중치) + (정규화된 인기도 * 가중치)
+            final_score = (similarity_score * SIMILARITY_WEIGHT) + (norm_pop_score * POPULARITY_WEIGHT)
+            
+            scored_results.append({"doc": doc, "final_score": final_score})
+
+        sorted_results = sorted(scored_results, key=lambda x: x['final_score'], reverse=True)
+
+        final_count = 5 # 기본값은 5개
+        if params.num_food is not None and params.num_food > 0:
+            final_count = params.num_food
+            print(f"Slicing results to {final_count} based on 'num_food'.")
+        elif params.single_result:
+            final_count = 1
+            print(f"Slicing results to 1 based on 'single_result'.")
+        else:
+            print(f"Slicing results to default count of {final_count}.")
+
+        final_documents = sorted_results[:final_count]
+
+        final_results = [item['doc'] for item in final_documents]
+    
+        print(f"Reranking complete. Final number of documents: {len(final_results)}")
+        print(final_results)
+
+        if params.single_result :
+            return Command(
+                goto="generate_single_recommendation",
+                update={"search_results": final_results}
+            )
+        else :
+            return Command(
+                goto="generate_multiple_recommendation",
+                update={"search_results": final_results}
+            )
+
+
+    def generate_single_recommendation(self, state:ChatState) -> Dict[str, Any] :
+        """
+        사용자 질문을 기반으로 한 개의 메뉴에 대해 LLM을 통해 최종 답변을 생성합니다.
+        """
+        print(">> Node: generate_single_recommendation")
+
+        question = state['messages'][-1].content
+        document = state["search_results"][0]
+
+        print(question)
+
+        llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
+
+        prompt = ChatPromptTemplate.from_messages([("system",
+            """당신은 레스토랑 챗봇입니다. 오직 아래에 제공된 '[메뉴 정보]'를 사용하여 사용자의 '[질문]'에 대해 간결하고 친절하게 메뉴를 추천하세요.
+            메뉴의 설명에 만약 사용자의 질문 조건과 어긋나는 내용이 있다면 해당 내용을 명시하세요.
+            알레르기 유발 재료 정보는 알레르기에 대한 질문인 경우에만 포함하세요.
+            사용자의 조건에 특정 재료 포함 여부가 있는 경우, "해당 답변은 참고용이며, 정확한 알레르기 관련 정보는 꼭 가게에 확인 부탁드립니다." 라는 문장을 포함하십시오.
+            절대 없는 정보를 지어내서는 안됩니다.
+            
+            [메뉴 정보]
+            {context}
+            """),
+            ("human", "[질문]\n{question}")])
+        
+        chain = prompt | llm | StrOutputParser()
+
+        response = chain.invoke({
+            "context": document,
+            "question": question
+        })
+
+        return Command(
+            goto=END,
+            update={"response": response, "messages": [AIMessage(content=response)]}
+        )
+
+    def generate_multiple_recommendation(self, state:ChatState) -> Dict[str, Any] :
+        """
+        사용자 질문을 기반으로 여러 개의 메뉴에 대해 LLM을 통해 최종 답변을 생성합니다.
+        """
+        print(">> Node: generate_multiple_recommendation")
+
+        question = state['messages'][-1].content
+        document = state["search_results"]
+
+        print(question)
+
+        llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
+
+        prompt = ChatPromptTemplate.from_messages([("system",
+            """당신은 레스토랑 챗봇입니다. 아래에 제공된 '[메뉴 정보]'를 사용하여 사용자의 '[질문]'에 대해 간결하고 친절하게 답변하세요.
+            1. 서론: 먼저, 어떤 요청에 기반한 추천인지 간단히 언급하며 대화를 시작하세요. (예: "고객님께서 요청하신 10,000원 이하의 인기 메뉴들로 몇 가지 준비해봤어요.")
+            2. 본론 (메뉴 목록):
+            - 각 메뉴를 번호나 글머리 기호 목록으로 제시하세요.
+            - 각 항목에는 메뉴 이름(굵은 글씨), 가격, 그리고 메뉴의 특징을 한 문장으로 요약한 설명을 포함해야 합니다.
+            3. 결론: 목록 제시 후, 다음 행동을 유도하는 질문으로 마무리하세요. (예: "이 중에서 마음에 드는 메뉴가 있으신가요? 원하시는 메뉴를 말씀해주시면 장바구니에 담아드릴게요.")
+            알레르기 유발 재료 정보는 알레르기에 대한 질문인 경우에만 포함하세요.
+            사용자의 조건에 특정 재료 포함 여부가 있는 경우, "해당 답변은 참고용이며, 정확한 알레르기 관련 정보는 꼭 가게에 확인 부탁드립니다." 라는 문장을 포함하십시오.
+            절대 없는 정보를 지어내서는 안됩니다.
+            
+            [메뉴 정보]
+            {context}
+            """),
+            ("human", "[질문]\n{question}")])
+        
+        chain = prompt | llm | StrOutputParser()
+
+        response = chain.invoke({
+            "context": document,
+            "question": question
+        })
+
+        return Command(
+            goto=END,
+            update={"response": response, "messages": [AIMessage(content=response)]}
+        )
+
+    # --- Public 메서드 ---
     def process_chat(self, session_id: str, user_input: str, store_id: int) -> str:
         """
         사용자 입력을 받아 전체 챗봇 플로우를 실행하고 최종 답변을 반환합니다.
