@@ -56,7 +56,8 @@ class ChatbotService:
         workflow.add_node("call_add_to_cart_api", self.call_add_to_cart_api) # 장바구니 추가
         workflow.add_node("ask_request_confirmation", self.ask_request_confirmation) # 요청사항 확인
         workflow.add_node("call_request_api", self.call_request_api) # 요청사항 전송
-        workflow.add_node("get_store_info", self.get_store_info)
+        workflow.add_node("get_store_info", self.get_store_info) # 가게 정보 제공
+        workflow.add_node("get_menu_info", self.get_menu_info) # 가게 정보 제공
 
         workflow.set_entry_point("classify_intent") 
         workflow.add_edge("classify_intent", "route_confirmation")
@@ -93,22 +94,6 @@ class ChatbotService:
             # LLM 응답이 파싱 불가능한 형태일 경우 (예: "['땅콩', '잣'")
             logger.info(f"🚨 [파싱 오류] LLM 응답을 파싱할 수 없습니다: {llm_output}, 오류: {e}")
             return []
-    
-    def _get_menu_detail(self, store_id: int, menu_name: str) -> str:
-        """메뉴 정보를 불러옵니다."""
-        docs = self.vectorstore_service.find_document(
-                query=menu_name,
-                store_id=store_id,
-                type="menu",
-                k=5
-            )
-        if docs:
-            content = docs[0].page_content
-            print(f"메뉴 정보: {content}")
-            return content
-
-        return ""
-    
 
     # --- LangGraph 노드 함수 (클래스 메서드로 변환) ---
     def classify_intent(self, state: ChatState) -> Dict[str, Any]:
@@ -228,6 +213,9 @@ class ChatbotService:
         
         if intent == Intent.GET_STORE_INFO:
             return Command(goto="get_store_info")
+        
+        if intent == Intent.GET_MENU_INFO:
+            return Command(goto="get_menu_info")
         
         return Command(
             goto=END,
@@ -435,6 +423,72 @@ class ChatbotService:
                 goto=END,
                 update={"response": response, "messages": [AIMessage(content=response)]}
             )
+
+    def get_menu_info(self, state: ChatState) -> Dict[str, Any]:
+        """
+        사용자 질문을 기반으로 ChromaDB에서 메뉴 정보를 RAG로 검색하고,
+        LLM을 통해 최종 답변을 생성합니다.
+        """
+        print(">> Node: get_menu_info")
+
+        store_id = state["store_id"]
+        question = state['messages'][-1].content
+        task_params = state.get("task_params")
+
+        docs = self.vectorstore_service.find_document(
+                query=task_params.menu_name,
+                store_id=store_id,
+                type="menu",
+                k=5
+            )
+        
+        if(docs):
+            content = docs[0].page_content
+            llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
+
+            prompt = ChatPromptTemplate.from_messages([("system",
+                """당신은 레스토랑 챗봇입니다. 오직 아래에 제공된 '[메뉴 정보]'만을 사용하여 사용자의 '[질문]'에 대해 간결하고 친절하게 답변하세요.
+                알레르기 유발 재료 정보는 알레르기에 대한 질문인 경우에만 포함하세요.
+                정보가 없다면, 정보를 찾을 수 없다고 솔직하게 답변해야 합니다. 절대 정보를 지어내지 마세요.
+                
+                [가게 정보]
+                {context}
+                """),
+                ("human", "[질문]\n{question}")])
+            
+            chain = prompt | llm | StrOutputParser()
+
+            response = chain.invoke({
+                "context": content,
+                "question": question
+            })
+
+            return Command(
+                goto=END,
+                update={"response": response, "messages": [AIMessage(content=response)]}
+            )
+
+        else:
+            response = "죄송합니다. 문의하신 정보를 찾지 못했습니다."
+            return Command(
+                goto=END,
+                update={"response": response, "messages": [AIMessage(content=response)]}
+            )
+
+    def _get_menu_detail(self, store_id: int, menu_name: str) -> str:
+        """메뉴 정보를 불러옵니다."""
+        docs = self.vectorstore_service.find_document(
+                query=menu_name,
+                store_id=store_id,
+                type="menu",
+                k=5
+            )
+        if docs:
+            content = docs[0].page_content
+            print(f"메뉴 정보: {content}")
+            return content
+
+        return ""
 
     def get_menu_detail_node(self, state: ChatState) -> Dict[str,Any]:
         query = state["input"]
