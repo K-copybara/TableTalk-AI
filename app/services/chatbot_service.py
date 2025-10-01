@@ -8,6 +8,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from langchain_core.documents import Document
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_core.output_parsers import StrOutputParser
 from langchain.prompts import ChatPromptTemplate
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_community.chat_message_histories import ChatMessageHistory
@@ -55,7 +56,7 @@ class ChatbotService:
         workflow.add_node("call_add_to_cart_api", self.call_add_to_cart_api) # 장바구니 추가
         workflow.add_node("ask_request_confirmation", self.ask_request_confirmation) # 요청사항 확인
         workflow.add_node("call_request_api", self.call_request_api) # 요청사항 전송
-        workflow.add_node
+        workflow.add_node("get_store_info", self.get_store_info)
 
         workflow.set_entry_point("classify_intent") 
         workflow.add_edge("classify_intent", "route_confirmation")
@@ -92,21 +93,6 @@ class ChatbotService:
             # LLM 응답이 파싱 불가능한 형태일 경우 (예: "['땅콩', '잣'")
             logger.info(f"🚨 [파싱 오류] LLM 응답을 파싱할 수 없습니다: {llm_output}, 오류: {e}")
             return []
-
-
-    def _get_store_info(self, store_id: int) -> str:
-        """가게 정보를 불러옵니다."""
-        docs = self.vectorstore_service.find_document(
-                query="가게 정보",
-                store_id=store_id,
-                type="store_info"
-            )
-        if docs:
-            content = docs[0].page_content
-            print(f"가게 정보: {content}")
-            return content
-
-        return ""
     
     def _get_menu_detail(self, store_id: int, menu_name: str) -> str:
         """메뉴 정보를 불러옵니다."""
@@ -143,7 +129,7 @@ class ChatbotService:
                 추가 파라미터가 필요 없는 경우는 route를 사용하여 intent만 반환하세요.
                 - add_to_cart: 장바구니에 메뉴 추가
                 - send_request: 가게에 대한 요청사항 전달
-                - get_store_info: 가게에 대한 정보 제공 (가게 이름, 설명, 영업시간, 브레이크타임 등)
+                - get_store_info: 가게에 대한 정보 제공 (가게 이름, 설명, 영업시간, 브레이크 타임 등)
                 - get_menu_info: 이름이 명시된 메뉴에 대한 정보 제공 (특정 메뉴의 가격/맵기/알레르기 유발 재료 등)
                 - recommend_menu: 사용자의 요청에 따른 메뉴 검색 및 정보 제공
                 - chitchat: 기능과 무관한 일반 대화
@@ -240,6 +226,9 @@ class ChatbotService:
         if intent == Intent.SEND_REQUEST:
             return Command(goto="ask_request_confirmation")
         
+        if intent == Intent.GET_STORE_INFO:
+            return Command(goto="get_store_info")
+        
         return Command(
             goto=END,
             update={"response": "지금은 장바구니 기능만 테스트 중이에요. 담을 메뉴를 말씀해 주세요!"}
@@ -281,7 +270,7 @@ class ChatbotService:
 
         task_params = state.get("task_params")
         if not isinstance(task_params, AddToCartParams):
-            return {"response": "오류가 발생했습니다."}
+            return {"response": "죄송합니다. 오류가 발생했습니다."}
 
         menu_name = task_params.menu_name
         quantity = task_params.quantity or 1
@@ -357,7 +346,7 @@ class ChatbotService:
 
         task_params = state.get("task_params")
         if not isinstance(task_params, SendRequestParams):
-            return {"response": "오류가 발생했습니다."}
+            return {"response": "죄송합니다. 오류가 발생했습니다."}
 
         request_note = task_params.request_note
 
@@ -398,61 +387,88 @@ class ChatbotService:
                 }
             )
         
-    # def get_store_info_node(self, state: ChatState) -> Dict[str,Any]:
-    #     query = state["input"]
-    #     print("사용자 질문: ", query)
-    #     store_info = self.get_store_info.invoke({"store_id": state["store_id"]})
+    def get_store_info(self, state: ChatState) -> Dict[str, Any]:
+        """
+        사용자 질문을 기반으로 ChromaDB에서 가게 정보를 RAG로 검색하고,
+        LLM을 통해 최종 답변을 생성합니다.
+        """
+        print(">> Node: get_store_info")
 
-    #     prompt = f"""당신은 고객에게 가게 정보를 안내하는 친절한 음식점 점원입니다.
-    #         아래 '가게 정보'에서 사용자의 질문에 해당하는 정보를 찾아 답변을 생성하세요.
-    #         사용자의 질문과 관련없는 정보는 답변에 포함하지 마세요.
-    #         사용자의 질문과 관련된 정보를 찾지 못한 경우 '죄송합니다. 해당 정보를 찾지 못했습니다.'라고 답변하세요.
+        store_id = state["store_id"]
+        question = state['messages'][-1].content
+        print(question)
 
-    #         [가게 정보]
-    #         {store_info}
+        docs = self.vectorstore_service.find_document(
+                query="가게 정보",
+                store_id=store_id,
+                type="store_info"
+            )
+        
+        if(docs):
+            content = docs[0].page_content
+            llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
 
-    #         [사용자의 질문]
-    #         {query}
+            prompt = ChatPromptTemplate.from_messages([("system",
+                """당신은 레스토랑 챗봇입니다. 오직 아래에 제공된 '[가게 정보]'만을 사용하여 사용자의 '[질문]'에 대해 간결하고 친절하게 답변하세요.
+                정보가 없다면, 정보를 찾을 수 없다고 솔직하게 답변해야 합니다. 절대 정보를 지어내지 마세요.
+                
+                [가게 정보]
+                {context}
+                """),
+                ("human", "[질문]\n{question}")])
+            
+            chain = prompt | llm | StrOutputParser()
 
-    #         [답변]
-    #         """
+            response = chain.invoke({
+                "context": content,
+                "question": question
+            })
 
-    #     response = self.llm.invoke(prompt)
-    #     return {"result": response.content}
+            return Command(
+                goto=END,
+                update={"response": response, "messages": [AIMessage(content=response)]}
+            )
 
-    # def get_menu_detail_node(self, state: ChatState) -> Dict[str,Any]:
-    #     query = state["input"]
-    #     print("사용자 질문: ", query)
+        else:
+            response = "죄송합니다. 문의하신 정보를 찾지 못했습니다."
+            return Command(
+                goto=END,
+                update={"response": response, "messages": [AIMessage(content=response)]}
+            )
 
-    #     menu_name = state["params"].get("menu_name")
-    #     if not menu_name and isinstance(state.get("docs"), list):
-    #             # 직전 결과에서 menu_name 추출
-    #             for d in state["docs"]:
-    #                 if d.metadata.get("menu_name"):
-    #                     menu_name = d.metadata["menu_name"]
-    #                     break
+    def get_menu_detail_node(self, state: ChatState) -> Dict[str,Any]:
+        query = state["input"]
+        print("사용자 질문: ", query)
 
-    #     if not menu_name:
-    #         return {"result": "어떤 메뉴를 말씀하시는지 다시 한 번 알려주세요."}
-    #     menu_detail = self.get_menu_detail.invoke({"store_id": state["store_id"], "menu_name":menu_name})
+        menu_name = state["params"].get("menu_name")
+        if not menu_name and isinstance(state.get("docs"), list):
+                # 직전 결과에서 menu_name 추출
+                for d in state["docs"]:
+                    if d.metadata.get("menu_name"):
+                        menu_name = d.metadata["menu_name"]
+                        break
 
-    #     prompt = f"""당신은 고객에게 메뉴 정보를 안내하는 친절한 음식점 점원입니다.
-    #         아래 '메뉴 정보'에서 사용자의 질문에 해당하는 정보를 찾아 답변을 생성하세요.
-    #         사용자의 질문과 관련없는 정보는 답변에 포함하지 마세요.
-    #         사용자의 질문과 관련된 정보를 찾지 못한 경우 '죄송합니다. 해당 정보를 찾지 못했습니다.'라고 답변하세요.
-    #         '알레르기 유발 재료'는 특정 재료에 대해 묻는 질문인 경우에만 활용하세요.
+        if not menu_name:
+            return {"result": "어떤 메뉴를 말씀하시는지 다시 한 번 알려주세요."}
+        menu_detail = self.get_menu_detail.invoke({"store_id": state["store_id"], "menu_name":menu_name})
 
-    #         [메뉴 정보]
-    #         {menu_detail}
+        prompt = f"""당신은 고객에게 메뉴 정보를 안내하는 친절한 음식점 점원입니다.
+            아래 '메뉴 정보'에서 사용자의 질문에 해당하는 정보를 찾아 답변을 생성하세요.
+            사용자의 질문과 관련없는 정보는 답변에 포함하지 마세요.
+            사용자의 질문과 관련된 정보를 찾지 못한 경우 '죄송합니다. 해당 정보를 찾지 못했습니다.'라고 답변하세요.
+            '알레르기 유발 재료'는 특정 재료에 대해 묻는 질문인 경우에만 활용하세요.
 
-    #         [사용자의 질문]
-    #         {query}
+            [메뉴 정보]
+            {menu_detail}
 
-    #         [답변]
-    #         """
+            [사용자의 질문]
+            {query}
 
-    #     response = self.llm.invoke(prompt)
-    #     return {"result": response.content}
+            [답변]
+            """
+
+        response = self.llm.invoke(prompt)
+        return {"result": response.content}
     
     # --- Public 메서드 ---
 
