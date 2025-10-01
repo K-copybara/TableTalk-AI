@@ -57,7 +57,8 @@ class ChatbotService:
         workflow.add_node("ask_request_confirmation", self.ask_request_confirmation) # 요청사항 확인
         workflow.add_node("call_request_api", self.call_request_api) # 요청사항 전송
         workflow.add_node("get_store_info", self.get_store_info) # 가게 정보 제공
-        workflow.add_node("get_menu_info", self.get_menu_info) # 가게 정보 제공
+        workflow.add_node("get_menu_info", self.get_menu_info) # 메뉴 정보 제공
+        workflow.add_node("chitchat", self.chitchat)
 
         workflow.set_entry_point("classify_intent") 
         workflow.add_edge("classify_intent", "route_confirmation")
@@ -133,8 +134,6 @@ class ChatbotService:
         result = (prompt | model).invoke({"history": history, "userInput": userInput})
         type_name = result.tool_calls[0]["name"]
         params = result.tool_calls[0]["args"]
-
-        print(result)
 
         if type_name == "RouteQuery":
             print(f"Intent classified as: {type_name}")
@@ -216,6 +215,9 @@ class ChatbotService:
         
         if intent == Intent.GET_MENU_INFO:
             return Command(goto="get_menu_info")
+        
+        if intent == Intent.CHITCHAT:
+            return Command(goto="chitchat")
         
         return Command(
             goto=END,
@@ -474,55 +476,33 @@ class ChatbotService:
                 goto=END,
                 update={"response": response, "messages": [AIMessage(content=response)]}
             )
+    
+    def chitchat(self, state: ChatState) -> Dict[str, Any]:
+        """
+        명시된 의도 외의 메시지에 대한 자연스러운 답변을 제공합니다.
+        """
+        print(">> Node: chitchat")
 
-    def _get_menu_detail(self, store_id: int, menu_name: str) -> str:
-        """메뉴 정보를 불러옵니다."""
-        docs = self.vectorstore_service.find_document(
-                query=menu_name,
-                store_id=store_id,
-                type="menu",
-                k=5
-            )
-        if docs:
-            content = docs[0].page_content
-            print(f"메뉴 정보: {content}")
-            return content
+        question = state['messages'][-1].content
 
-        return ""
 
-    def get_menu_detail_node(self, state: ChatState) -> Dict[str,Any]:
-        query = state["input"]
-        print("사용자 질문: ", query)
+        llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0.5)
 
-        menu_name = state["params"].get("menu_name")
-        if not menu_name and isinstance(state.get("docs"), list):
-                # 직전 결과에서 menu_name 추출
-                for d in state["docs"]:
-                    if d.metadata.get("menu_name"):
-                        menu_name = d.metadata["menu_name"]
-                        break
+        prompt = ChatPromptTemplate.from_messages([("system",
+            """당신은 레스토랑 챗봇입니다. 사용자의 '[메시지]'에 대해 간결하고 친절하게 답변하세요.
+            """),
+            ("human", "[질문]\n{question}")])
+        
+        chain = prompt | llm | StrOutputParser()
 
-        if not menu_name:
-            return {"result": "어떤 메뉴를 말씀하시는지 다시 한 번 알려주세요."}
-        menu_detail = self.get_menu_detail.invoke({"store_id": state["store_id"], "menu_name":menu_name})
+        response = chain.invoke({
+            "question": question
+        })
 
-        prompt = f"""당신은 고객에게 메뉴 정보를 안내하는 친절한 음식점 점원입니다.
-            아래 '메뉴 정보'에서 사용자의 질문에 해당하는 정보를 찾아 답변을 생성하세요.
-            사용자의 질문과 관련없는 정보는 답변에 포함하지 마세요.
-            사용자의 질문과 관련된 정보를 찾지 못한 경우 '죄송합니다. 해당 정보를 찾지 못했습니다.'라고 답변하세요.
-            '알레르기 유발 재료'는 특정 재료에 대해 묻는 질문인 경우에만 활용하세요.
-
-            [메뉴 정보]
-            {menu_detail}
-
-            [사용자의 질문]
-            {query}
-
-            [답변]
-            """
-
-        response = self.llm.invoke(prompt)
-        return {"result": response.content}
+        return Command(
+            goto=END,
+            update={"response": response, "messages": [AIMessage(content=response)]}
+        )
     
     # --- Public 메서드 ---
 
