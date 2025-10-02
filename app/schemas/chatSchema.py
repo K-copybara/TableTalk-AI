@@ -6,11 +6,10 @@ from enum import Enum
 from langchain_core.messages import BaseMessage
 
 class ChatRequest(BaseModel):
-    session_id: str
+    customer_key: str
     user_input: str
     store_id: int
     table_id: int
-    customer_key: str
 
 class ChatResponse(BaseModel):
     answer: str

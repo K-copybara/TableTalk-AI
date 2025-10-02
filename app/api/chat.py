@@ -8,9 +8,8 @@ router = APIRouter()
 async def handle_chat(request: ChatRequest):
     try:
         answer = chatbot_service.process_chat(
-            session_id=request.session_id,
+            session_id=request.customer_key,
             table_id=request.table_id,
-            customer_key=request.customer_key,
             user_input=request.user_input,
             store_id=request.store_id,
         )

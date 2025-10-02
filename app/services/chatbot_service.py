@@ -523,19 +523,23 @@ class ChatbotService:
         print(">> Node: chitchat")
 
         question = state['messages'][-1].content
-
+        history = "\n".join([f"{'User' if msg.type == 'human' else 'Bot'}: {msg.content}" for msg in state['messages'][-5:-1]])
 
         llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0.5)
 
         prompt = ChatPromptTemplate.from_messages([("system",
-            """당신은 레스토랑 챗봇입니다. 사용자의 '[메시지]'에 대해 간결하고 친절하게 답변하세요.
+            """당신은 레스토랑 챗봇입니다. [대화 내역]을 반영하여 사용자의 '[메시지]'에 대해 간결하고 친절하게 답변하세요.
+            
+            [대화 내역]
+            {history}
             """),
-            ("human", "[질문]\n{question}")])
+            ("human", "[메시지]\n{question}")])
         
         chain = prompt | llm | StrOutputParser()
 
         response = chain.invoke({
-            "question": question
+            "question": question,
+            "history": history
         })
 
         return Command(
@@ -886,14 +890,14 @@ class ChatbotService:
         )
 
     # --- Public 메서드 ---
-    def process_chat(self, session_id: str, user_input: str, store_id: int, table_id: int, customer_key: str) -> str:
+    def process_chat(self, session_id: str, user_input: str, store_id: int, table_id: int) -> str:
         """
         사용자 입력을 받아 전체 챗봇 플로우를 실행하고 최종 답변을 반환합니다.
         """
         initial_state: ChatState = {
             "store_id": store_id,
+            "customer_key": session_id,
             "table_id": table_id,
-            "customer_key": customer_key,
             "messages": [HumanMessage(content=user_input)]
         }
 
