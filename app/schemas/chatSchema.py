@@ -9,6 +9,8 @@ class ChatRequest(BaseModel):
     session_id: str
     user_input: str
     store_id: int
+    table_id: int
+    customer_key: str
 
 class ChatResponse(BaseModel):
     answer: str
@@ -91,6 +93,8 @@ class ChatState(TypedDict, total=False):
     """챗봇의 전체 대화 흐름을 관리하는 상태"""
     # --- 기본 대화 관리 ---
     store_id: int
+    table_id: int
+    customer_key: str
     messages: Annotated[List[BaseMessage], operator.add]
     intent: Optional[Intent]
     awaiting: Optional[str] # "confirmation" 등, 사용자의 특정 응답을 기다리는 상태

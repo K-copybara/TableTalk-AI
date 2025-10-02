@@ -59,6 +59,7 @@ class ChatbotService:
         workflow.add_node("chitchat", self.chitchat) # 기본 대화
 
         workflow.add_node("extract_menu_params", self.extract_menu_params) # 추천 조건 추출
+        workflow.add_node("get_popular_menus", self.get_popular_menus) # 인기 메뉴 목록 조회
         workflow.add_node("execute_search", self.execute_search) # 문서 검색
         workflow.add_node("rerank_documents", self.rerank_documents) # 유사도 + 인기도 기반 스코어링
         workflow.add_node("generate_single_recommendation", self.generate_single_recommendation) # 한 가지 메뉴 응답 생성
@@ -579,11 +580,79 @@ class ChatbotService:
 
         print(f"Extracted menu query params: {extracted_params}")
 
-        return Command(
-            goto="execute_search",
-            update={"menu_query_params": extracted_params}
-        )
+        data = extracted_params.dict()
+        if all(data[field] is None for field in data if field not in ["is_popular", "single_result", "num_food"]):
+            return Command(
+                goto="get_popular_menus",
+                update={"menu_query_params": extracted_params}
+            )
+        else :     
+            return Command(
+                goto="execute_search",
+                update={"menu_query_params": extracted_params}
+            )
     
+    def get_popular_menus(self, state:ChatState) -> Dict[str, Any]:
+        """
+        백엔드에서 인기 메뉴 목록을 받아옵니다.
+        """
+        print(">> Node: get_popular_menus")
+
+        store_id = state["store_id"]
+
+        try:
+            # --- 실제 API 호출 부분 ---
+            payload = {"store_id": store_id }
+            # response = requests.post(BACKEND_API_URL, json=payload)
+            # response.raise_for_status()  # 200번대 응답이 아니면 에러 발생
+            # api_result = response.json().get("data",[])
+            # print(f"API call successful: {api_result}")
+
+            api_result = [
+                {
+                "menuId": 101,
+                "menuName": "탄탄지 샐러드",
+                "menuInfo": "국내산 닭가슴살과 고구마무스가 들어간 샐러드",
+                "menuPrice": 8600,
+                },
+                {
+                "menuId": 102,
+                "menuName": "하가우",
+                "menuInfo": "통새우가 가득 들어간 딤섬",
+                "menuPrice": 8900,
+                },
+                {
+                "menuId": 103,
+                "menuName": "바나나 아이스크림",
+                "menuInfo": "달콤한 바나나와 부드러운 바닐라 아이스크림",
+                "menuPrice": 4800,
+                }
+            ]
+            
+            return Command(
+                goto="generate_multiple_recommendation",
+                update={
+                    "api_result": "success", # 수정 필요
+                    "search_results": api_result
+                }
+            )
+        
+        # except requests.exceptions.RequestException as e:
+        except Exception as e:
+            print(f"API call failed: {e}")
+            # API 호출 실패 시 사용자에게 보여줄 메시지
+            return Command(
+                goto=END,
+                update={
+                    "api_result": {"error": str(e)},
+                    "response": "죄송합니다, 서버 통신 중 오류가 발생하였습니다. 다시 시도해주세요.",
+                    "task_params": None,
+                    "awaiting": None,
+                    "messages": [AIMessage(content="죄송합니다, 서버 통신 중 오류가 발생하였습니다. 다시 시도해주세요.")]
+                }
+            )
+
+
     def execute_search(self, state:ChatState) -> Dict[str, Any] :
         """
         추출된 menu_query_params를 사용하여 ChromaDB에서
@@ -771,7 +840,7 @@ class ChatbotService:
 
         return Command(
             goto=END,
-            update={"response": response, "messages": [AIMessage(content=response)]}
+            update={"response": response, "messages": [AIMessage(content=response)], "search_results" : None}
         )
 
     def generate_multiple_recommendation(self, state:ChatState) -> Dict[str, Any] :
@@ -780,10 +849,11 @@ class ChatbotService:
         """
         print(">> Node: generate_multiple_recommendation")
 
+        print(state)
         question = state['messages'][-1].content
         document = state["search_results"]
-
         print(question)
+
 
         llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
 
@@ -812,16 +882,18 @@ class ChatbotService:
 
         return Command(
             goto=END,
-            update={"response": response, "messages": [AIMessage(content=response)]}
+            update={"response": response, "messages": [AIMessage(content=response)], "search_results" : None}
         )
 
     # --- Public 메서드 ---
-    def process_chat(self, session_id: str, user_input: str, store_id: int) -> str:
+    def process_chat(self, session_id: str, user_input: str, store_id: int, table_id: int, customer_key: str) -> str:
         """
         사용자 입력을 받아 전체 챗봇 플로우를 실행하고 최종 답변을 반환합니다.
         """
         initial_state: ChatState = {
             "store_id": store_id,
+            "table_id": table_id,
+            "customer_key": customer_key,
             "messages": [HumanMessage(content=user_input)]
         }
 
