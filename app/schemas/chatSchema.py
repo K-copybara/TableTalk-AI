@@ -81,7 +81,7 @@ class MenuQuerySchema(BaseModel):
     
     # 추천 유형을 결정하는 핵심 필드들
     single_result: bool = Field(
-        default=True, description="결과가 메뉴 하나로 이루어져도 되는 경우 True"
+        default=True, description="결과가 메뉴 하나로만 이루어져야 하는 경우 True"
     )
     num_food: Optional[int] = Field(
         default=None, description="추천이 필요한 음식의 개수"

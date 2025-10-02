@@ -2,6 +2,9 @@ import logging
 import os
 from typing import Dict, Any, List, Optional
 
+from langchain.retrievers import EnsembleRetriever
+from langchain_community.retrievers import BM25Retriever
+from langchain_teddynote.retrievers import KiwiBM25Retriever
 from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 from langchain_chroma import Chroma
@@ -156,6 +159,47 @@ class VectorStoreService:
             k=k,
             filter=final_filter
         )
+    
+    def ensemble_search(self, store_id: int, query: str, k: int=5, filters: Optional[List[Dict[str, Any]]]=None) -> List[Document]:
+        """
+        BM25 (키워드)와 Chroma (유사도) 검색을 결합한 앙상블 검색을 수행합니다.
+        """
+        base_filter: List[Dict[str, Any]] = [{"store_id": store_id}, {"type": "menu"}]
+        if(filters):
+            base_filter.extend(filters)
+        final_filter = {"$and": base_filter}
+
+        filtered_results = self.vectorstore.get(where=final_filter, include=["metadatas", "documents"])
+        
+        filtered_docs: List[Document] = []
+        if filtered_results and filtered_results.get("ids"):
+            for i in range(len(filtered_results["ids"])):
+                filtered_docs.append(
+                    Document(
+                        page_content=filtered_results["documents"][i],
+                        metadata=filtered_results["metadatas"][i]
+                    )
+                )
+        if not filtered_docs:
+            logger.info("필터 조건에 맞는 문서가 없습니다.")
+            return []
+        
+        bm25_retriever = KiwiBM25Retriever.from_documents(filtered_docs)
+        bm25_retriever.k = k
+
+        chroma_retriever = self.vectorstore.as_retriever(
+            search_type="similarity",
+            search_kwargs={'k': k, 'filter': final_filter}
+        )
+
+        ensemble_retriever = EnsembleRetriever(
+            retrievers=[bm25_retriever, chroma_retriever],
+            weights=[0.5, 0.5], # 두 검색기의 가중치 설정
+            search_type="rrf", 
+        )
+
+        results = ensemble_retriever.invoke(query)
+        return results
     
     def get_documents_by_store_id(self, store_id: int) -> Dict[str, Any]:
         """

@@ -449,14 +449,14 @@ class ChatbotService:
 
             return Command(
                 goto=END,
-                update={"response": response, "messages": [AIMessage(content=response)]}
+                update={"response": response, "messages": [AIMessage(content=response)], "task_params": None}
             )
 
         else:
             response = "죄송합니다. 문의하신 정보를 찾지 못했습니다."
             return Command(
                 goto=END,
-                update={"response": response, "messages": [AIMessage(content=response)]}
+                update={"response": response, "messages": [AIMessage(content=response)], "task_params": None}
             )
 
     def get_menu_info(self, state: ChatState) -> Dict[str, Any]:
@@ -506,14 +506,14 @@ class ChatbotService:
 
             return Command(
                 goto=END,
-                update={"response": response, "messages": [AIMessage(content=response)]}
+                update={"response": response, "messages": [AIMessage(content=response)], "task_params": None}
             )
 
         else:
             response = "죄송합니다. 문의하신 정보를 찾지 못했습니다."
             return Command(
                 goto=END,
-                update={"response": response, "messages": [AIMessage(content=response)]}
+                update={"response": response, "messages": [AIMessage(content=response)], "task_params": None}
             )
     
     def chitchat(self, state: ChatState) -> Dict[str, Any]:
@@ -692,9 +692,8 @@ class ChatbotService:
         print(f"Query text for vector search: '{query_text}'")
         
         try:
-            results = self.vectorstore_service.find_conditional_document(
+            results = self.vectorstore_service.ensemble_search(
                 store_id=store_id,
-                type="menu",
                 query=query_text,
                 filters=filters,
                 k=10
@@ -721,18 +720,40 @@ class ChatbotService:
         """
         print(">> Node: rerank_documents")
 
-        SIMILARITY_WEIGHT = 0.8  # 검색어와의 관련도 가중치
-        POPULARITY_WEIGHT = 0.2  # 대중적인 인기도 가중치
-
+        SIMILARITY_WEIGHT = 0.7  # 검색어와의 관련도 가중치
+        POPULARITY_WEIGHT = 0.3  # 대중적인 인기도 가중치
+        
         candidate_results = state.get("search_results")
         params = state.get("menu_query_params")
+        final_count = 5 # 기본값은 5개
+        if params.num_food is not None and params.num_food > 0:
+            final_count = params.num_food
+        elif params.single_result:
+            final_count = 1
+
         if not candidate_results:
             return Command(
                 goto=END,
-                update={"response": "죄송합니다. 다른 조건으로 다시 질문해주시겠어요?"}
+                update={"response": "해당 조건에 맞는 메뉴를 찾지 못했습니다. 다른 조건으로 다시 질문해주시겠어요?"}
+            )
+        
+        if not params.is_popular:
+            final_results = candidate_results[:final_count]
+
+            return Command(
+                goto=("generate_single_recommendation" if params.single_result else "generate_multiple_recommendation"),
+                update={"search_results": final_results}
             )
 
-        menu_ids = [doc.metadata.get('menu_id') for doc, score in candidate_results if doc.metadata.get('menu_id')]
+        def positional_rrf_score(idx: int, total: int) -> float:
+            return 1.0 / (30 + (idx + 1))
+
+        normalized_candidates = [
+            (doc, positional_rrf_score(i, len(candidate_results)))
+            for i, doc in enumerate(candidate_results)
+        ]
+
+        menu_ids = [doc.metadata.get('menu_id') for doc, score in normalized_candidates if doc.metadata.get('menu_id')]
         # try:
         #     response = requests.post(BACKEND_API_URL, json={"menu_ids": menu_ids})
         #     response.raise_for_status()
@@ -764,7 +785,7 @@ class ChatbotService:
         pop_scores = [score for score in popularity_map.values() if score is not None]
         min_pop, max_pop = (min(pop_scores), max(pop_scores)) if pop_scores else (0, 0)
         
-        for doc, similarity_score in candidate_results:
+        for doc, similarity_score in normalized_candidates:
             menu_id = doc.metadata.get('menu_id')
             pop_score = popularity_map.get(menu_id, 0)
 
@@ -781,16 +802,6 @@ class ChatbotService:
 
         sorted_results = sorted(scored_results, key=lambda x: x['final_score'], reverse=True)
 
-        final_count = 5 # 기본값은 5개
-        if params.num_food is not None and params.num_food > 0:
-            final_count = params.num_food
-            print(f"Slicing results to {final_count} based on 'num_food'.")
-        elif params.single_result:
-            final_count = 1
-            print(f"Slicing results to 1 based on 'single_result'.")
-        else:
-            print(f"Slicing results to default count of {final_count}.")
-
         final_documents = sorted_results[:final_count]
 
         final_results = [item['doc'] for item in final_documents]
@@ -798,16 +809,10 @@ class ChatbotService:
         print(f"Reranking complete. Final number of documents: {len(final_results)}")
         print(final_results)
 
-        if params.single_result :
-            return Command(
-                goto="generate_single_recommendation",
-                update={"search_results": final_results}
-            )
-        else :
-            return Command(
-                goto="generate_multiple_recommendation",
-                update={"search_results": final_results}
-            )
+        return Command(
+            goto=("generate_single_recommendation" if params.single_result else "generate_multiple_recommendation"),
+            update={"search_results": final_results}
+        )
 
 
     def generate_single_recommendation(self, state:ChatState) -> Dict[str, Any] :
@@ -825,7 +830,7 @@ class ChatbotService:
 
         prompt = ChatPromptTemplate.from_messages([("system",
             """당신은 레스토랑 챗봇입니다. 오직 아래에 제공된 '[메뉴 정보]'를 사용하여 사용자의 '[질문]'에 대해 간결하고 친절하게 메뉴를 추천하세요.
-            메뉴의 설명에 만약 사용자의 질문 조건과 어긋나는 내용이 있다면 해당 내용을 명시하세요.
+            사용자의 질문 조건을 메뉴 설명에서 찾을 수 없다면 "현재 해당 정보는 제공되지 않다"고 설명하세요.
             알레르기 유발 재료 정보는 알레르기에 대한 질문인 경우에만 포함하세요.
             사용자의 조건에 특정 재료 포함 여부가 있는 경우, "해당 답변은 참고용이며, 정확한 알레르기 관련 정보는 꼭 가게에 확인 부탁드립니다." 라는 문장을 포함하십시오.
             절대 없는 정보를 지어내서는 안됩니다.
@@ -853,10 +858,8 @@ class ChatbotService:
         """
         print(">> Node: generate_multiple_recommendation")
 
-        print(state)
         question = state['messages'][-1].content
         document = state["search_results"]
-        print(question)
 
 
         llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
