@@ -6,9 +6,10 @@ from enum import Enum
 from langchain_core.messages import BaseMessage
 
 class ChatRequest(BaseModel):
-    session_id: str
+    customer_key: str
     user_input: str
     store_id: int
+    table_id: int
 
 class ChatResponse(BaseModel):
     answer: str
@@ -80,7 +81,7 @@ class MenuQuerySchema(BaseModel):
     
     # 추천 유형을 결정하는 핵심 필드들
     single_result: bool = Field(
-        default=True, description="결과가 메뉴 하나로 이루어져도 되는 경우 True"
+        default=True, description="결과가 메뉴 하나로만 이루어져야 하는 경우 True"
     )
     num_food: Optional[int] = Field(
         default=None, description="추천이 필요한 음식의 개수"
@@ -91,6 +92,8 @@ class ChatState(TypedDict, total=False):
     """챗봇의 전체 대화 흐름을 관리하는 상태"""
     # --- 기본 대화 관리 ---
     store_id: int
+    table_id: int
+    customer_key: str
     messages: Annotated[List[BaseMessage], operator.add]
     intent: Optional[Intent]
     awaiting: Optional[str] # "confirmation" 등, 사용자의 특정 응답을 기다리는 상태

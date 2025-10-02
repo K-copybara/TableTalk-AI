@@ -59,6 +59,7 @@ class ChatbotService:
         workflow.add_node("chitchat", self.chitchat) # 기본 대화
 
         workflow.add_node("extract_menu_params", self.extract_menu_params) # 추천 조건 추출
+        workflow.add_node("get_popular_menus", self.get_popular_menus) # 인기 메뉴 목록 조회
         workflow.add_node("execute_search", self.execute_search) # 문서 검색
         workflow.add_node("rerank_documents", self.rerank_documents) # 유사도 + 인기도 기반 스코어링
         workflow.add_node("generate_single_recommendation", self.generate_single_recommendation) # 한 가지 메뉴 응답 생성
@@ -448,14 +449,14 @@ class ChatbotService:
 
             return Command(
                 goto=END,
-                update={"response": response, "messages": [AIMessage(content=response)]}
+                update={"response": response, "messages": [AIMessage(content=response)], "task_params": None}
             )
 
         else:
             response = "죄송합니다. 문의하신 정보를 찾지 못했습니다."
             return Command(
                 goto=END,
-                update={"response": response, "messages": [AIMessage(content=response)]}
+                update={"response": response, "messages": [AIMessage(content=response)], "task_params": None}
             )
 
     def get_menu_info(self, state: ChatState) -> Dict[str, Any]:
@@ -505,14 +506,14 @@ class ChatbotService:
 
             return Command(
                 goto=END,
-                update={"response": response, "messages": [AIMessage(content=response)]}
+                update={"response": response, "messages": [AIMessage(content=response)], "task_params": None}
             )
 
         else:
             response = "죄송합니다. 문의하신 정보를 찾지 못했습니다."
             return Command(
                 goto=END,
-                update={"response": response, "messages": [AIMessage(content=response)]}
+                update={"response": response, "messages": [AIMessage(content=response)], "task_params": None}
             )
     
     def chitchat(self, state: ChatState) -> Dict[str, Any]:
@@ -522,19 +523,23 @@ class ChatbotService:
         print(">> Node: chitchat")
 
         question = state['messages'][-1].content
-
+        history = "\n".join([f"{'User' if msg.type == 'human' else 'Bot'}: {msg.content}" for msg in state['messages'][-5:-1]])
 
         llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0.5)
 
         prompt = ChatPromptTemplate.from_messages([("system",
-            """당신은 레스토랑 챗봇입니다. 사용자의 '[메시지]'에 대해 간결하고 친절하게 답변하세요.
+            """당신은 레스토랑 챗봇입니다. [대화 내역]을 반영하여 사용자의 '[메시지]'에 대해 간결하고 친절하게 답변하세요.
+            
+            [대화 내역]
+            {history}
             """),
-            ("human", "[질문]\n{question}")])
+            ("human", "[메시지]\n{question}")])
         
         chain = prompt | llm | StrOutputParser()
 
         response = chain.invoke({
-            "question": question
+            "question": question,
+            "history": history
         })
 
         return Command(
@@ -579,11 +584,79 @@ class ChatbotService:
 
         print(f"Extracted menu query params: {extracted_params}")
 
-        return Command(
-            goto="execute_search",
-            update={"menu_query_params": extracted_params}
-        )
+        data = extracted_params.dict()
+        if all(data[field] is None for field in data if field not in ["is_popular", "single_result", "num_food"]):
+            return Command(
+                goto="get_popular_menus",
+                update={"menu_query_params": extracted_params}
+            )
+        else :     
+            return Command(
+                goto="execute_search",
+                update={"menu_query_params": extracted_params}
+            )
     
+    def get_popular_menus(self, state:ChatState) -> Dict[str, Any]:
+        """
+        백엔드에서 인기 메뉴 목록을 받아옵니다.
+        """
+        print(">> Node: get_popular_menus")
+
+        store_id = state["store_id"]
+
+        try:
+            # --- 실제 API 호출 부분 ---
+            payload = {"store_id": store_id }
+            # response = requests.post(BACKEND_API_URL, json=payload)
+            # response.raise_for_status()  # 200번대 응답이 아니면 에러 발생
+            # api_result = response.json().get("data",[])
+            # print(f"API call successful: {api_result}")
+
+            api_result = [
+                {
+                "menuId": 101,
+                "menuName": "탄탄지 샐러드",
+                "menuInfo": "국내산 닭가슴살과 고구마무스가 들어간 샐러드",
+                "menuPrice": 8600,
+                },
+                {
+                "menuId": 102,
+                "menuName": "하가우",
+                "menuInfo": "통새우가 가득 들어간 딤섬",
+                "menuPrice": 8900,
+                },
+                {
+                "menuId": 103,
+                "menuName": "바나나 아이스크림",
+                "menuInfo": "달콤한 바나나와 부드러운 바닐라 아이스크림",
+                "menuPrice": 4800,
+                }
+            ]
+            
+            return Command(
+                goto="generate_multiple_recommendation",
+                update={
+                    "api_result": "success", # 수정 필요
+                    "search_results": api_result
+                }
+            )
+        
+        # except requests.exceptions.RequestException as e:
+        except Exception as e:
+            print(f"API call failed: {e}")
+            # API 호출 실패 시 사용자에게 보여줄 메시지
+            return Command(
+                goto=END,
+                update={
+                    "api_result": {"error": str(e)},
+                    "response": "죄송합니다, 서버 통신 중 오류가 발생하였습니다. 다시 시도해주세요.",
+                    "task_params": None,
+                    "awaiting": None,
+                    "messages": [AIMessage(content="죄송합니다, 서버 통신 중 오류가 발생하였습니다. 다시 시도해주세요.")]
+                }
+            )
+
+
     def execute_search(self, state:ChatState) -> Dict[str, Any] :
         """
         추출된 menu_query_params를 사용하여 ChromaDB에서
@@ -619,9 +692,8 @@ class ChatbotService:
         print(f"Query text for vector search: '{query_text}'")
         
         try:
-            results = self.vectorstore_service.find_conditional_document(
+            results = self.vectorstore_service.ensemble_search(
                 store_id=store_id,
-                type="menu",
                 query=query_text,
                 filters=filters,
                 k=10
@@ -648,18 +720,40 @@ class ChatbotService:
         """
         print(">> Node: rerank_documents")
 
-        SIMILARITY_WEIGHT = 0.8  # 검색어와의 관련도 가중치
-        POPULARITY_WEIGHT = 0.2  # 대중적인 인기도 가중치
-
+        SIMILARITY_WEIGHT = 0.7  # 검색어와의 관련도 가중치
+        POPULARITY_WEIGHT = 0.3  # 대중적인 인기도 가중치
+        
         candidate_results = state.get("search_results")
         params = state.get("menu_query_params")
+        final_count = 5 # 기본값은 5개
+        if params.num_food is not None and params.num_food > 0:
+            final_count = params.num_food
+        elif params.single_result:
+            final_count = 1
+
         if not candidate_results:
             return Command(
                 goto=END,
-                update={"response": "죄송합니다. 다른 조건으로 다시 질문해주시겠어요?"}
+                update={"response": "해당 조건에 맞는 메뉴를 찾지 못했습니다. 다른 조건으로 다시 질문해주시겠어요?"}
+            )
+        
+        if not params.is_popular:
+            final_results = candidate_results[:final_count]
+
+            return Command(
+                goto=("generate_single_recommendation" if params.single_result else "generate_multiple_recommendation"),
+                update={"search_results": final_results}
             )
 
-        menu_ids = [doc.metadata.get('menu_id') for doc, score in candidate_results if doc.metadata.get('menu_id')]
+        def positional_rrf_score(idx: int, total: int) -> float:
+            return 1.0 / (30 + (idx + 1))
+
+        normalized_candidates = [
+            (doc, positional_rrf_score(i, len(candidate_results)))
+            for i, doc in enumerate(candidate_results)
+        ]
+
+        menu_ids = [doc.metadata.get('menu_id') for doc, score in normalized_candidates if doc.metadata.get('menu_id')]
         # try:
         #     response = requests.post(BACKEND_API_URL, json={"menu_ids": menu_ids})
         #     response.raise_for_status()
@@ -691,7 +785,7 @@ class ChatbotService:
         pop_scores = [score for score in popularity_map.values() if score is not None]
         min_pop, max_pop = (min(pop_scores), max(pop_scores)) if pop_scores else (0, 0)
         
-        for doc, similarity_score in candidate_results:
+        for doc, similarity_score in normalized_candidates:
             menu_id = doc.metadata.get('menu_id')
             pop_score = popularity_map.get(menu_id, 0)
 
@@ -708,16 +802,6 @@ class ChatbotService:
 
         sorted_results = sorted(scored_results, key=lambda x: x['final_score'], reverse=True)
 
-        final_count = 5 # 기본값은 5개
-        if params.num_food is not None and params.num_food > 0:
-            final_count = params.num_food
-            print(f"Slicing results to {final_count} based on 'num_food'.")
-        elif params.single_result:
-            final_count = 1
-            print(f"Slicing results to 1 based on 'single_result'.")
-        else:
-            print(f"Slicing results to default count of {final_count}.")
-
         final_documents = sorted_results[:final_count]
 
         final_results = [item['doc'] for item in final_documents]
@@ -725,16 +809,10 @@ class ChatbotService:
         print(f"Reranking complete. Final number of documents: {len(final_results)}")
         print(final_results)
 
-        if params.single_result :
-            return Command(
-                goto="generate_single_recommendation",
-                update={"search_results": final_results}
-            )
-        else :
-            return Command(
-                goto="generate_multiple_recommendation",
-                update={"search_results": final_results}
-            )
+        return Command(
+            goto=("generate_single_recommendation" if params.single_result else "generate_multiple_recommendation"),
+            update={"search_results": final_results}
+        )
 
 
     def generate_single_recommendation(self, state:ChatState) -> Dict[str, Any] :
@@ -752,7 +830,7 @@ class ChatbotService:
 
         prompt = ChatPromptTemplate.from_messages([("system",
             """당신은 레스토랑 챗봇입니다. 오직 아래에 제공된 '[메뉴 정보]'를 사용하여 사용자의 '[질문]'에 대해 간결하고 친절하게 메뉴를 추천하세요.
-            메뉴의 설명에 만약 사용자의 질문 조건과 어긋나는 내용이 있다면 해당 내용을 명시하세요.
+            사용자의 질문 조건을 메뉴 설명에서 찾을 수 없다면 "현재 해당 정보는 제공되지 않다"고 설명하세요.
             알레르기 유발 재료 정보는 알레르기에 대한 질문인 경우에만 포함하세요.
             사용자의 조건에 특정 재료 포함 여부가 있는 경우, "해당 답변은 참고용이며, 정확한 알레르기 관련 정보는 꼭 가게에 확인 부탁드립니다." 라는 문장을 포함하십시오.
             절대 없는 정보를 지어내서는 안됩니다.
@@ -771,7 +849,7 @@ class ChatbotService:
 
         return Command(
             goto=END,
-            update={"response": response, "messages": [AIMessage(content=response)]}
+            update={"response": response, "messages": [AIMessage(content=response)], "search_results" : None}
         )
 
     def generate_multiple_recommendation(self, state:ChatState) -> Dict[str, Any] :
@@ -783,7 +861,6 @@ class ChatbotService:
         question = state['messages'][-1].content
         document = state["search_results"]
 
-        print(question)
 
         llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
 
@@ -812,16 +889,18 @@ class ChatbotService:
 
         return Command(
             goto=END,
-            update={"response": response, "messages": [AIMessage(content=response)]}
+            update={"response": response, "messages": [AIMessage(content=response)], "search_results" : None}
         )
 
     # --- Public 메서드 ---
-    def process_chat(self, session_id: str, user_input: str, store_id: int) -> str:
+    def process_chat(self, session_id: str, user_input: str, store_id: int, table_id: int) -> str:
         """
         사용자 입력을 받아 전체 챗봇 플로우를 실행하고 최종 답변을 반환합니다.
         """
         initial_state: ChatState = {
             "store_id": store_id,
+            "customer_key": session_id,
+            "table_id": table_id,
             "messages": [HumanMessage(content=user_input)]
         }
 
