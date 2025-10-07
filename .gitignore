@@ -1,6 +1,8 @@
 .venv
 .env
 db
+kafka.yaml
+certs
 
 # Python
 __pycache__/
