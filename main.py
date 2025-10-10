@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
-from confluent_kafka import Producer, Consumer, KafkaException
+# from confluent_kafka import Producer, Consumer, KafkaException
 
 
 from app.api import chat, store
