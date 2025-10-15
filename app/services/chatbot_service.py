@@ -35,6 +35,8 @@ from app.core.config import settings
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+SERVER_API_URL = os.getenv("SERVER_API_URL")
+
 # --- 3. 핵심 서비스 클래스 ---
 
 class ChatbotService:
@@ -167,8 +169,10 @@ class ChatbotService:
             return Command(
                 goto=END,
                 update={
-                    "response": "네/아니오로 알려주세요. 요청사항을 전송할까요?",
-                    "messages": [AIMessage(content="네/아니오로 알려주세요. 요청사항을 전송할까요?")]
+                    "response": "네/아니오로 알려주세요. 장바구니에 추가할까요?",
+                    "messages": [AIMessage(content="네/아니오로 알려주세요. 장바구니에 추가할까요?")],
+                    "task_params": state.get("task_params"),
+                    "awaiting": awaiting,
                 }
             )
         if awaiting == "confirmation_request":
@@ -189,7 +193,9 @@ class ChatbotService:
                 goto=END,
                 update={
                     "response": "네/아니오로 알려주세요. 요청사항을 전송할까요?",
-                    "messages": [AIMessage(content="네/아니오로 알려주세요. 요청사항을 전송할까요?")]
+                    "messages": [AIMessage(content="네/아니오로 알려주세요. 요청사항을 전송할까요?")],
+                    "task_params": state.get("task_params"),
+                    "awaiting": awaiting
                 }
                 
             )
@@ -249,9 +255,11 @@ class ChatbotService:
             if search_results:
                 found_doc = search_results[0]
                 correct_menu_name = found_doc.metadata.get("menu_name", item.menu_name)
+                correct_menu_id = found_doc.metadata.get("menu_id")
                 validated_items.append(
-                    MenuItem(menu_name=correct_menu_name, quantity=item.quantity)
+                    MenuItem(menu_name=correct_menu_name, quantity=item.quantity, menu_id=correct_menu_id)
                 )
+
         if not validated_items:
             msg = "담을 수 있는 메뉴를 찾지 못했어요. 다른 메뉴로 다시 말씀해 주세요."
             return Command(goto=END, update={"response": msg, "messages": [AIMessage(content=msg)]})        
@@ -273,7 +281,6 @@ class ChatbotService:
         print(f"State awaiting set to: {awaiting_status}")
 
         updated_task_params = AddToCartParams(items=validated_items, type="add_to_cart")
-
         return Command(
             goto=END,
             update={"response": response_message, "messages": [AIMessage(content=response_message)], "awaiting": awaiting_status, "task_params":updated_task_params}
@@ -285,50 +292,78 @@ class ChatbotService:
         """
         print(">> Node: call_add_to_cart_api")
 
-        task_params = state.get("task_params")
-        if not isinstance(task_params, AddToCartParams):
-            return {"response": "죄송합니다. 오류가 발생했습니다."}
+        task_params = state.get("task_params")        
+        store_id = state.get("store_id")
+        table_id = state.get("table_id")
+        customer_key = state.get("customer_key")
 
-        try:
-            # --- 실제 API 호출 부분 ---
-            items_payload = [item.model_dump() for item in task_params.items]
-            payload = {"items": items_payload}
-            # response = requests.post(BACKEND_API_URL, json=payload)
-            # response.raise_for_status()  # 200번대 응답이 아니면 에러 발생
+        if not all([isinstance(task_params, AddToCartParams), store_id, table_id, customer_key]):
+            return Command(goto=END, update={"response": "죄송합니다. 주문 정보가 올바르지 않아 추가할 수 없습니다."})
+
+        successful_items: list[MenuItem] = []
+        failed_item_name: str = ""
+        error_message: str = ""
+
+         # --- 1. 각 아이템을 순회하며 개별 API 호출 ---
+        for item in task_params.items:
+            # CartItem에 menu_id가 포함되어 있는지 확인
+            if not item.menu_id:
+                failed_item_name = item.menu_name
+                error_message = "메뉴 ID를 찾을 수 없습니다."
+                break # 필수 정보가 없으면 중단
+
+            endpoint = SERVER_API_URL + "/api/customer/cart"
+            payload = {
+                "storeId": store_id,
+                "tableId": table_id,
+                "menuId": item.menu_id,
+                "amount": item.quantity,
+                "customerKey": customer_key
+            }
+
+            print(payload)
             
-            # api_result = response.json()
-            # print(f"API call successful: {api_result}")
-            
-            # 작업이 성공적으로 끝났으므로, 관련 상태를 초기화하고 결과를 저장
-            item_strings = [f"'{item.menu_name}' {item.quantity}개" for item in task_params.items]
-            items_text = ", ".join(item_strings)
-            response_message = f"{items_text}가 장바구니에 성공적으로 추가되었습니다."
-            
-            return Command(
-                goto=END,
-                update={
-                    "api_result": "success", # 수정 필요
-                    "response": response_message,
-                    "task_params": None, # 작업 완료 후 파라미터 초기화
-                    "awaiting": None,    # 대기 상태 해제
-                    "messages": [AIMessage(content=response_message)]
-                }
-            )
+            try:
+                response = requests.post(endpoint, json=payload)
+                response.raise_for_status()
+                successful_items.append(item)
+                print(f"API call successful for: {item.menu_name}")
+                
+            except requests.exceptions.RequestException as e:
+                failed_item_name = item.menu_name
+                error_message = f"서버 통신 오류: {e}"
+                print(f"API call failed for: {failed_item_name}. Error: {error_message}")
+                break # 하나라도 실패하면 중단
+
+        # --- 2. API 호출 결과에 따라 최종 응답 메시지 생성 ---
+        response_message = ""
         
-        # except requests.exceptions.RequestException as e:
-        except Exception as e:
-            print(f"API call failed: {e}")
-            # API 호출 실패 시 사용자에게 보여줄 메시지
-            return Command(
-                goto=END,
-                update={
-                    "api_result": {"error": str(e)},
-                    "response": "죄송합니다, 서버 통신 중 오류가 발생하여 장바구니에 추가하지 못했습니다.",
-                    "task_params": None,
-                    "awaiting": None,
-                    "messages": [AIMessage(content="죄송합니다, 서버 통신 중 오류가 발생하여 장바구니에 추가하지 못했습니다.")]
-                }
-            )
+        # Case 1: 일부 성공 후 실패
+        if successful_items and failed_item_name:
+            success_text = ", ".join([f"'{item.menu_name}'" for item in successful_items])
+            response_message = f"{success_text}는 장바구니에 추가되었지만, '{failed_item_name}' 추가 중 오류가 발생했습니다."
+
+        # Case 2: 모두 실패 (첫 번째부터 실패)
+        elif not successful_items and failed_item_name:
+            response_message = f"'{failed_item_name}'을 장바구니에 추가하는 중 오류가 발생했습니다."
+
+        # Case 3: 모두 성공
+        else:
+            success_text = ", ".join([f"'{item.menu_name}' {item.quantity}개" for item in successful_items])
+            response_message = f"{success_text}가 장바구니에 성공적으로 추가되었습니다."
+        
+        is_overall_success = failed_item_name == ""
+
+        return Command(
+            goto=END,
+            update={
+                "api_result": "success" if is_overall_success else "failure",
+                "response": response_message,
+                "task_params": None, # 작업 완료 후 파라미터 초기화
+                "awaiting": None,    # 대기 상태 해제
+                "messages": [AIMessage(content=response_message)]
+            }
+        )
         
     def ask_request_confirmation(self, state: ChatState) -> Dict[str, Any]:
         """
@@ -365,19 +400,24 @@ class ChatbotService:
         task_params = state.get("task_params")
         if not isinstance(task_params, SendRequestParams):
             return {"response": "죄송합니다. 오류가 발생했습니다."}
-
+        
+        store_id = state.get("store_id")
+        table_id = state.get("table_id")
+        customer_key = state.get("customer_key")
         request_note = task_params.request_note
 
         try:
             # --- 실제 API 호출 부분 ---
-            payload = {"menu_name": request_note }
-            # response = requests.post(BACKEND_API_URL, json=payload)
-            # response.raise_for_status()  # 200번대 응답이 아니면 에러 발생
+            payload = {"storeId": store_id, "tableId": table_id, "customerKey": customer_key, "requestNote": request_note }
+            endpoint = SERVER_API_URL + '/api/customer/order-request'
             
-            # api_result = response.json()
-            # print(f"API call successful: {api_result}")
+            response = requests.post(endpoint, json=payload)
+            response.raise_for_status()  # 200번대 응답이 아니면 에러 발생
             
-            # 작업이 성공적으로 끝났으므로, 관련 상태를 초기화하고 결과를 저장
+            api_result = response.json()
+            print(f"API call successful: {api_result}")
+            
+            # 관련 상태를 초기화하고 결과를 저장
             response_message = f"요청사항을 전송하였습니다! 잠시만 기다려주세요."
             return Command(
                 goto=END,
@@ -390,8 +430,7 @@ class ChatbotService:
                 }
             )
         
-        # except requests.exceptions.RequestException as e:
-        except Exception as e:
+        except requests.exceptions.RequestException as e:
             print(f"API call failed: {e}")
             # API 호출 실패 시 사용자에게 보여줄 메시지
             return Command(
