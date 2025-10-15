@@ -1,7 +1,7 @@
 from app.schemas.events import StoreEnvelope, MenuEnvelope
 from app.services.vectorstore_service import vectorstore_service
 
-def handle_store(raw_event: dict):
+def handle_store(raw_event: dict): # 상점 관련 변경
     event = StoreEnvelope.model_validate(raw_event)
     if event.event_type == "DELETED":
         vectorstore_service.delete_store(event.store_id)
@@ -10,7 +10,7 @@ def handle_store(raw_event: dict):
             raise ValueError("store payload missing")
         vectorstore_service.upsert_store_info(event.store_id, event.store.model_dump())
 
-def handle_menu(raw_event: dict):
+def handle_menu(raw_event: dict): # 메뉴 관련 변경
     event = MenuEnvelope.model_validate(raw_event)
     if event.event_type == "DELETED":
         vectorstore_service.delete_menu(event.store_id, event.menu_id)
