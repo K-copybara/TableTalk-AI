@@ -793,30 +793,15 @@ class ChatbotService:
         ]
 
         menu_ids = [doc.metadata.get('menu_id') for doc, score in normalized_candidates if doc.metadata.get('menu_id')]
-        # try:
-        #     response = requests.post(BACKEND_API_URL, json={"menu_ids": menu_ids})
-        #     response.raise_for_status()
-        #     popularity_data = response.json().get("data",[])
-        #     popularity_map = {item['menu_id']: item['score'] for item in popularity_data}
-        # except requests.exceptions.RequestException as e:
-        #     print(f"API call for popularity failed: {e}. Proceeding without popularity scores.")
-        
-        popularity_map = { # 임시 데이터
-            1:20,
-            2:30,
-            3:50,
-            4:10,
-            5:70,
-            6:40,
-            7:90,
-            8:110,
-            9:120,
-            10:20,
-            11:30,
-            12:40,
-            13:70,
-            14:3,
-        }
+        try:
+            print(menu_ids)
+            endpoint = SERVER_API_URL + '/api/customer/menu-sales'
+            response = requests.post(endpoint, json={"menuIds": menu_ids})
+            response.raise_for_status()
+            popularity_map = {int(k): v for k, v in response.json().get("data", {}).items()}
+            print(f"Popularity map received: {popularity_map}")
+        except requests.exceptions.RequestException as e:
+            print(f"API call for popularity failed: {e}. Proceeding without popularity scores.")
 
         scored_results = []
 
@@ -846,7 +831,6 @@ class ChatbotService:
         final_results = [item['doc'] for item in final_documents]
     
         print(f"Reranking complete. Final number of documents: {len(final_results)}")
-        print(final_results)
 
         return Command(
             goto=("generate_single_recommendation" if params.single_result else "generate_multiple_recommendation"),
