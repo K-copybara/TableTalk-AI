@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from app.kafka.consumer import start_consumer, stop_consumer
 from app.api import chat, store
+from check_db_status import check_database_status
 
 load_dotenv()
 
@@ -15,6 +16,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173",],
@@ -29,3 +31,7 @@ app.include_router(store.router, prefix="/stores")
 @app.get("/")
 async def root():
     return {"message": "Welcome to the TableTalk"}
+
+@app.get("/check_document/{store_id}")
+async def check_document(store_id: int):
+    return check_database_status(store_id)
