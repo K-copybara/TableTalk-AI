@@ -5,14 +5,14 @@ from app.schemas.storeSchema import StoreSchema, MenuSchema
 EventType = Literal["CREATED", "UPDATED", "DELETED"]
 
 class StoreEnvelope(BaseModel):
-    store_id: int
-    event_type: EventType
+    storeId: int
+    eventType: EventType
     timestamp: str
     store: Optional[StoreSchema] = None   # DELETED면 없음
 
 class MenuEnvelope(BaseModel):
-    store_id: int
-    menu_id: int
-    event_type: EventType
+    storeId: int
+    menuId: int
+    eventType: EventType
     timestamp: str
     menu: Optional[MenuSchema] = None     # DELETED면 없음
