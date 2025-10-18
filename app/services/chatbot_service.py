@@ -645,32 +645,13 @@ class ChatbotService:
 
         try:
             # --- 실제 API 호출 부분 ---
-            payload = {"store_id": store_id }
-            # response = requests.post(BACKEND_API_URL, json=payload)
-            # response.raise_for_status()  # 200번대 응답이 아니면 에러 발생
-            # api_result = response.json().get("data",[])
-            # print(f"API call successful: {api_result}")
+            payload = {"storeId": store_id }
+            endpoint = SERVER_API_URL + '/api/customer/top3-menus'
 
-            api_result = [
-                {
-                "menuId": 101,
-                "menuName": "탄탄지 샐러드",
-                "menuInfo": "국내산 닭가슴살과 고구마무스가 들어간 샐러드",
-                "menuPrice": 8600,
-                },
-                {
-                "menuId": 102,
-                "menuName": "하가우",
-                "menuInfo": "통새우가 가득 들어간 딤섬",
-                "menuPrice": 8900,
-                },
-                {
-                "menuId": 103,
-                "menuName": "바나나 아이스크림",
-                "menuInfo": "달콤한 바나나와 부드러운 바닐라 아이스크림",
-                "menuPrice": 4800,
-                }
-            ]
+            response = requests.post(endpoint, json=payload)
+            response.raise_for_status()  # 200번대 응답이 아니면 에러 발생
+            api_result = response.json().get("data",[])
+            print(f"API call successful: {api_result}")
             
             return Command(
                 goto="generate_multiple_recommendation",
@@ -680,8 +661,7 @@ class ChatbotService:
                 }
             )
         
-        # except requests.exceptions.RequestException as e:
-        except Exception as e:
+        except requests.exceptions.RequestException as e:
             print(f"API call failed: {e}")
             # API 호출 실패 시 사용자에게 보여줄 메시지
             return Command(
