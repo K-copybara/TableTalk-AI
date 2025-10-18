@@ -43,6 +43,7 @@ class MenuItem(BaseModel):
     """장바구니에 담길 개별 메뉴 항목."""
     menu_name: str = Field(description="메뉴 이름")
     quantity: int = Field(default=1, description="수량")
+    menu_id: Optional[int] = Field(default=None, description="메뉴 ID")
 
 class AddToCartParams(BaseModel):
     """'장바구니 추가' 태스크에 필요한 파라미터."""
