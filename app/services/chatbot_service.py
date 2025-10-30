@@ -100,13 +100,13 @@ class ChatbotService:
                 type은 route|add_to_cart|send_request|get_menu_info 중 하나입니다.
                 추가 파라미터가 필요 없는 경우는 route를 사용하여 intent만 반환하세요.
                 - add_to_cart: 장바구니에 메뉴 추가
-                - send_request: 가게에 대한 요청사항 전달
+                - send_request: 가게에 요청사항 전달
                 - recommend_menu: 사용자의 조건에 따른 메뉴 검색 및 정보 제공. 추천 요청은 전부 이 의도에 해당하며 문장에 명시적으로 나와있지 않더라도 조건이 있는 경우 이 의도에 포함 (예시 : ~는 뭐가 있어? ~한 메뉴 있어?)
                 - get_store_info: 가게에 대한 정보 제공 (가게 이름, 설명, 영업시간, 브레이크 타임 등)
                 - get_menu_info: 특정 한 개 메뉴에 대한 설명 제공 (특정 메뉴의 가격/맵기/알레르기 유발 재료 등)
                 - chitchat: 기능과 무관한 일반 대화
-                - confirm: 사용자의 긍정 응답 (예: "네", "맞아요", "어", "응")
-                - deny: 사용자의 부정 응답 (예: "아니요", "취소")
+                - confirm: 사용자의 긍정 대답 (예: "응", "네", "어", "그래")
+                - deny: 사용자의 부정 대답 (예: "아니요", "아니", "취소")
                 필요한 모든 파라미터는 반드시 JSON으로 응답해야 합니다.
                 """
              ),
@@ -526,8 +526,9 @@ class ChatbotService:
                 """당신은 레스토랑 챗봇입니다. 오직 아래에 제공된 [메뉴 정보]와 [대화 기록]을 사용하여 사용자의 '[질문]'에 대해 간결하고 친절하게 답변하세요.
                 알레르기 유발 재료 정보는 알레르기에 대한 질문인 경우에만 포함하세요.
                 정보가 없다면, 정보를 찾을 수 없다고 솔직하게 답변해야 합니다. 절대 정보를 지어내지 마세요.
-                
-                [가게 정보]
+                메뉴 정보 중, 사용자가 물어본 것에 대해서만 대답하세요.
+
+                [메뉴 정보]
                 {context}
 
                 [대화 기록]
@@ -593,7 +594,7 @@ class ChatbotService:
         """
         print(">> Node: extract_menu_params")
 
-        llm = ChatOpenAI(model="gpt-4-turbo", temperature=0)
+        llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
         structured_llm = llm.with_structured_output(MenuQuerySchema, method="function_calling")
 
         prompt = ChatPromptTemplate.from_messages([
@@ -744,7 +745,7 @@ class ChatbotService:
         
         candidate_results = state.get("search_results")
         params = state.get("menu_query_params")
-        final_count = 5 # 기본값은 5개
+        final_count = 3 # 기본값은 5개
         if params.num_food is not None and params.num_food > 0:
             final_count = params.num_food
         elif params.single_result:
@@ -837,6 +838,7 @@ class ChatbotService:
             알레르기 유발 재료 정보는 알레르기에 대한 질문인 경우에만 포함하세요.
             사용자의 조건에 특정 재료 포함 여부가 있는 경우, "해당 답변은 참고용이며, 정확한 알레르기 관련 정보는 꼭 가게에 확인 부탁드립니다." 라는 문장을 포함하십시오.
             절대 없는 정보를 지어내서는 안됩니다.
+            설명 후, 장바구니 추가를 유도하는 질문으로 마무리하세요. (예: "해당 메뉴를 장바구니에 담아드릴까요?")
             
             [메뉴 정보]
             {context}
@@ -872,10 +874,10 @@ class ChatbotService:
             1. 서론: 먼저, 어떤 요청에 기반한 추천인지 간단히 언급하며 대화를 시작하세요. (예: "고객님께서 요청하신 10,000원 이하의 인기 메뉴들로 몇 가지 준비해봤어요.")
             2. 본론 (메뉴 목록):
             - 각 메뉴를 번호나 글머리 기호 목록으로 제시하세요.
-            - 각 항목에는 메뉴 이름(굵은 글씨), 가격, 그리고 메뉴의 특징을 한 문장으로 요약한 설명을 포함해야 합니다.
+            - 각 항목에는 메뉴 이름, 가격, 그리고 메뉴의 특징을 한 문장으로 요약한 설명을 포함해야 합니다.
             3. 결론: 목록 제시 후, 다음 행동을 유도하는 질문으로 마무리하세요. (예: "이 중에서 마음에 드는 메뉴가 있으신가요? 원하시는 메뉴를 말씀해주시면 장바구니에 담아드릴게요.")
             알레르기 유발 재료 정보는 알레르기에 대한 질문인 경우에만 포함하세요.
-            사용자의 조건에 특정 재료 포함 여부가 있는 경우, "해당 답변은 참고용이며, 정확한 알레르기 관련 정보는 꼭 가게에 확인 부탁드립니다." 라는 문장을 포함하십시오.
+            사용자의 조건에 알레르기가 명시된 경우, "해당 답변은 참고용이며, 정확한 알레르기 관련 정보는 꼭 가게에 확인 부탁드립니다." 라는 문장을 포함하십시오.
             절대 없는 정보를 지어내서는 안됩니다.
             
             [메뉴 정보]
