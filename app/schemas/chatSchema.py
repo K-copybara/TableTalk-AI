@@ -109,7 +109,6 @@ class ChatState(TypedDict, total=False):
     api_result: Optional[dict] # API 호출 성공/실패 결과
 
     # --- RAG 및 검색 결과 ---
-    retrieval: Dict[str, Any] # RAG 검색 결과 {"menu": {...}, "store": {...}}
     search_results: Optional[List[Dict[str, Any]]] # 메뉴 추천 후보군 리스트
 
     # --- 메뉴 추천 전용 ---
