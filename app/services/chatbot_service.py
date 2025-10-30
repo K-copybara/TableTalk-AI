@@ -88,7 +88,7 @@ class ChatbotService:
         print(">> Node: classify_intent")
 
         tools = [RouteQuery, AddToCartParams, SendRequestParams, GetMenuInfoParams]
-        llm = ChatOpenAI(model="gpt-4-turbo", temperature=0)
+        llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
         model = llm.bind_tools(tools)
 
         prompt = ChatPromptTemplate.from_messages([
