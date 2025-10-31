@@ -12,6 +12,8 @@ def handle_store(raw_event: dict): # 상점 관련 변경
 
 def handle_menu(raw_event: dict): # 메뉴 관련 변경
     event = MenuEnvelope.model_validate(raw_event)
+    if event.menu.price == 0:
+        return
     if event.eventType == "DELETED":
         vectorstore_service.delete_menu(event.storeId, event.menuId)
     elif event.eventType == "CREATED":

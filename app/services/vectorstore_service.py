@@ -23,8 +23,8 @@ class VectorStoreService:
         self.persist_directory = './app/db/chroma_db'
 
         # OpenAI 임베딩 모델 초기화
-        os.environ['OPENAI_API_KEY'] = settings.OPENAI_API_KEY # type: ignore
-        self.embeddings = OpenAIEmbeddings()
+        os.environ['OPENAI_API_KEY'] = settings.OPENAI_API_KEY
+        self.embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
 
         # ChromaDB 클라이언트 초기화
         self.vectorstore = Chroma(
@@ -194,7 +194,7 @@ class VectorStoreService:
 
         ensemble_retriever = EnsembleRetriever(
             retrievers=[bm25_retriever, chroma_retriever],
-            weights=[0.5, 0.5], # 두 검색기의 가중치 설정
+            weights=[0.5, 0.5],
             search_type="rrf", 
         )
 
