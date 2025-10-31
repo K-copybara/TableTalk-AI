@@ -83,25 +83,25 @@ class VectorStoreService:
         logger.info(f"가게 정보가 성공적으로 추가/수정되었습니다: {doc_id}")
         return doc_id
     
-    def add_menu(self, store_id:int, menu_id:int, menu_data: Dict[str, Any])->str:
-        """새로운 메뉴를 벡터 DB에 추가"""      
+    def upsert_menu(self, store_id:int, menu_id:int, menu_data: Dict[str, Any])->str:
+        """새로운 메뉴를 벡터 DB에 추가하거나 수정"""      
         doc = self._create_menu_document(store_id, menu_id, menu_data)
         doc_id = f"store_{store_id}_menu_{menu_id}"
 
         self.vectorstore.add_documents([doc], ids=[doc_id])
-        logger.info(f"새로운 메뉴가 성공적으로 추가되었습니다: {doc_id}")
+        logger.info(f"새로운 메뉴가 성공적으로 추가/수정되었습니다: {doc_id}")
         return doc_id
     
-    def update_menu(self, store_id: int, menu_id:int, menu_data:Dict[str, Any])->str:
-        """기존 메뉴를 벡터 DB에서 수정"""
-        menu_data['menu_id'] = menu_id
+    # def update_menu(self, store_id: int, menu_id:int, menu_data:Dict[str, Any])->str:
+    #     """기존 메뉴를 벡터 DB에서 수정"""
+    #     menu_data['menu_id'] = menu_id
 
-        doc = self._create_menu_document(store_id, menu_id, menu_data)
-        doc_id = f"store_{store_id}_menu_{menu_id}"
+    #     doc = self._create_menu_document(store_id, menu_id, menu_data)
+    #     doc_id = f"store_{store_id}_menu_{menu_id}"
 
-        self.vectorstore.update_document(document_id=doc_id, document=doc)
-        logger.info(f"메뉴 정보가 성공적으로 수정되었습니다: {doc_id}")
-        return doc_id
+    #     self.vectorstore.update_document(document_id=doc_id, document=doc)
+    #     logger.info(f"메뉴 정보가 성공적으로 수정되었습니다: {doc_id}")
+    #     return doc_id
 
     def delete_menu(self, store_id: int, menu_id: int) -> str:
         """특정 메뉴를 벡터 DB에서 삭제"""

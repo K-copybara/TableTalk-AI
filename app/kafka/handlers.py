@@ -18,9 +18,9 @@ def handle_menu(raw_event: dict): # 메뉴 관련 변경
         vectorstore_service.delete_menu(event.storeId, event.menuId)
     elif event.eventType == "CREATED":
         if not event.menu: raise ValueError("menu payload missing")
-        vectorstore_service.add_menu(event.storeId, event.menuId, event.menu.model_dump())
+        vectorstore_service.upsert_menu(event.storeId, event.menuId, event.menu.model_dump())
     elif event.eventType == "UPDATED":
         if not event.menu: raise ValueError("menu payload missing")
-        vectorstore_service.update_menu(event.storeId, event.menuId, event.menu.model_dump())
+        vectorstore_service.upsert_menu(event.storeId, event.menuId, event.menu.model_dump())
     else:
         raise ValueError(f"unknown event_type: {event.eventType}")
